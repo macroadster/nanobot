@@ -939,6 +939,21 @@ Override the endpoint with `apiBase` when you need the legacy CLI chat proxy
 normalized. Optional `extraHeaders` are merged into requests (nanobot always
 sends a `User-Agent`).
 
+When `apiBase` points at `https://cli-chat-proxy.grok.com/v1`, nanobot
+automatically adds the headers that proxy requires from non-CLI clients:
+
+- `x-grok-client-version` — resolved from `GROK_CLIENT_VERSION`,
+  `~/.grok/version.json`, `grok --version` on `PATH`, or the minimum
+  accepted version (`0.1.202`)
+- `X-XAI-Token-Auth: xai-grok-cli`
+- `x-grok-model-override` set to the active model id
+
+Without `x-grok-client-version` the proxy rejects requests with HTTP 426
+(`Your Grok CLI version (none) is outdated`). Override any of these via
+`extraHeaders` if needed. For ordinary public models, omit `apiBase` and use
+`https://api.x.ai/v1` (the default); OIDC tokens from `grok login` work there
+without CLI version headers.
+
 </details>
 
 <details>
