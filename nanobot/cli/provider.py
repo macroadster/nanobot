@@ -25,12 +25,14 @@ _PROVIDER_DISPLAY: dict[str, str] = {
     "openai_codex": "OpenAI Codex",
     "xai_grok": "xAI Grok",
     "github_copilot": "GitHub Copilot",
+    "grok": "Grok (xAI)",
 }
 
 _OAUTH_PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "openai_codex": "openai-codex/gpt-5.6-sol",
     "xai_grok": "xai-grok/grok-4.6",
     "github_copilot": "github-copilot/gpt-5.4-mini",
+    "grok": "grok-4",
 }
 
 
@@ -153,7 +155,7 @@ def _set_oauth_provider_as_main(
 def provider_login(
     provider: str = typer.Argument(
         ...,
-        help="OAuth provider (e.g. 'openai-codex', 'xai-grok', 'github-copilot')",
+        help="OAuth provider (e.g. 'openai-codex', 'xai-grok', 'github-copilot', 'grok')",
     ),
     set_main: bool = typer.Option(
         False,
@@ -194,7 +196,7 @@ def provider_login(
 def provider_logout(
     provider: str = typer.Argument(
         ...,
-        help="OAuth provider (e.g. 'openai-codex', 'xai-grok', 'github-copilot')",
+        help="OAuth provider (e.g. 'openai-codex', 'xai-grok', 'github-copilot', 'grok')",
     ),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
@@ -346,6 +348,75 @@ def _delete_oauth_files(token_path: Path, provider_label: str) -> None:
         console.print(f"[yellow]! Could not remove {path}: {exc}[/yellow]")
 
 
+def _login_grok() -> None:
+    """Reuse credentials written by the official Grok CLI (`grok login`)."""
+    from nanobot.providers.grok_provider import GROK_AUTH_FILE, get_grok_login_status
+
+    status = get_grok_login_status()
+    if status.get("configured"):
+        account = status.get("account") or "logged in"
+        console.print(f"[green]✓ Grok OIDC credentials found[/green]  [dim]{account}[/dim]")
+        console.print(f"[dim]Auth file: {GROK_AUTH_FILE}[/dim]")
+        return
+
+    console.print("[yellow]No usable Grok OIDC credentials found.[/yellow]\n")
+    console.print("Authenticate with the official Grok CLI / TUI, then retry:")
+    console.print("  [cyan]grok login[/cyan]")
+    console.print("  [cyan]grok login --oauth[/cyan]\n")
+    console.print(f"Expected auth file: [dim]{GROK_AUTH_FILE}[/dim]")
+    console.print("Or set [cyan]XAI_API_KEY[/cyan] for direct public API access.")
+    raise typer.Exit(1)
+
+
+def _logout_grok() -> None:
+    """Clear local Grok OIDC credentials from ~/.grok/auth.json."""
+    import json
+
+    from nanobot.providers.grok_provider import GROK_AUTH_FILE, _load_raw_auth_file
+
+    if not GROK_AUTH_FILE.exists():
+        console.print("[yellow]! No local Grok OIDC credentials found[/yellow]")
+        return
+
+    raw = _load_raw_auth_file()
+    if not raw:
+        console.print("[yellow]! No local Grok OIDC credentials found[/yellow]")
+        return
+
+    # Remove OIDC/browser login entries only; leave unrelated keys intact.
+    kept: dict[str, object] = {}
+    removed = 0
+    for key, entry in raw.items():
+        if not isinstance(entry, dict):
+            kept[key] = entry
+            continue
+        is_oidc = (
+            entry.get("auth_mode") == "oidc"
+            or entry.get("refresh_token")
+            or "auth.x.ai" in str(key).lower()
+            or "accounts.x.ai" in str(key).lower()
+        )
+        if is_oidc:
+            removed += 1
+            continue
+        kept[key] = entry
+
+    if removed == 0:
+        console.print("[yellow]! No local Grok OIDC credentials found[/yellow]")
+        return
+
+    try:
+        if kept:
+            GROK_AUTH_FILE.write_text(json.dumps(kept, indent=2), encoding="utf-8")
+        else:
+            GROK_AUTH_FILE.unlink(missing_ok=True)
+        console.print(f"[green]✓ Logged out from {_PROVIDER_DISPLAY['grok']}[/green]")
+        console.print(f"[dim]Updated: {GROK_AUTH_FILE}[/dim]")
+    except OSError as exc:
+        console.print(f"[red]Could not update {GROK_AUTH_FILE}: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+
 def _login_github_copilot() -> None:
     try:
         from nanobot.providers.github_copilot_provider import login_github_copilot
@@ -368,9 +439,11 @@ _LOGIN_HANDLERS: dict[str, Callable[[], None]] = {
     "openai_codex": _login_openai_codex,
     "xai_grok": _login_xai_grok,
     "github_copilot": _login_github_copilot,
+    "grok": _login_grok,
 }
 _LOGOUT_HANDLERS: dict[str, Callable[[], None]] = {
     "openai_codex": _logout_openai_codex,
     "xai_grok": _logout_xai_grok,
     "github_copilot": _logout_github_copilot,
+    "grok": _logout_grok,
 }

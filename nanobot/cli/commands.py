@@ -708,7 +708,27 @@ def status(
             if p is None:
                 continue
             if spec.is_oauth:
-                console.print(f"{spec.label}: [green]✓ (OAuth)[/green]")
+                if spec.name == "grok":
+                    try:
+                        from nanobot.providers.grok_provider import get_grok_login_status
+
+                        st = get_grok_login_status()
+                        if st.get("configured"):
+                            account = st.get("account") or "logged in"
+                            console.print(
+                                f"{spec.label}: [green]✓ (OIDC)[/green]  [dim]{account}[/dim]"
+                            )
+                        elif p and p.api_key:
+                            console.print(f"{spec.label}: [green]✓ (API key)[/green]")
+                        else:
+                            console.print(
+                                f"{spec.label}: [dim]not set[/dim]  "
+                                f"[dim](run `grok login` or set XAI_API_KEY)[/dim]"
+                            )
+                    except Exception:
+                        console.print(f"{spec.label}: [green]✓ (OAuth)[/green]")
+                else:
+                    console.print(f"{spec.label}: [green]✓ (OAuth)[/green]")
             elif spec.is_local:
                 # Local deployments show api_base instead of api_key
                 if resolve_env_refs(p.api_base or ""):
