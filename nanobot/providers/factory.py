@@ -115,6 +115,13 @@ def _make_provider_core(
         from nanobot.providers.github_copilot_provider import GitHubCopilotProvider
 
         provider = GitHubCopilotProvider(default_model=model)
+    elif backend == "grok":
+        from nanobot.providers.grok_provider import GrokProvider
+
+        provider = GrokProvider(
+            default_model=model,
+            api_key=p.api_key if p else None,
+        )
     elif backend == "anthropic":
         from nanobot.providers.anthropic_provider import AnthropicProvider
 

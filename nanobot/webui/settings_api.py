@@ -497,6 +497,25 @@ def _oauth_provider_status(spec: Any) -> dict[str, Any]:
             "login_supported": True,
         }
 
+    if spec.name == "grok":
+        try:
+            from nanobot.providers.grok_provider import get_grok_login_status
+        except Exception:
+            return {
+                "configured": False,
+                "account": None,
+                "expires_at": None,
+                "login_supported": False,
+            }
+        with suppress(Exception):
+            return get_grok_login_status()
+        return {
+            "configured": False,
+            "account": None,
+            "expires_at": None,
+            "login_supported": True,
+        }
+
     return {"configured": False, "account": None, "expires_at": None, "login_supported": False}
 
 
@@ -1839,6 +1858,21 @@ def login_oauth_provider(query: QueryParams) -> dict[str, Any]:
             "expires_in": flow.remaining_seconds,
         }
 
+    if spec.name == "grok":
+        try:
+            from nanobot.providers.grok_provider import get_grok_login_status
+        except ImportError:
+            raise WebUISettingsError("Grok provider is unavailable", status=500) from None
+
+        status = get_grok_login_status()
+        if not status.get("configured"):
+            raise WebUISettingsError(
+                "Grok OIDC credentials not found. Run `grok login` on the host "
+                "(or set XAI_API_KEY), then mount ~/.grok into the container.",
+                status=401,
+            )
+        return settings_payload()
+
     raise WebUISettingsError("OAuth login is not supported for this provider")
 
 
@@ -1907,6 +1941,35 @@ def logout_oauth_provider(query: QueryParams) -> dict[str, Any]:
 
         _clear_xai_webui_oauth_flows()
         logout_xai_oauth()
+        return settings_payload()
+    elif spec.name == "grok":
+        try:
+            from nanobot.providers.grok_provider import GROK_AUTH_FILE, _load_raw_auth_file
+        except ImportError:
+            raise WebUISettingsError("Grok provider is unavailable", status=500) from None
+
+        raw = _load_raw_auth_file()
+        if raw:
+            kept = {
+                key: entry
+                for key, entry in raw.items()
+                if not (
+                    isinstance(entry, dict)
+                    and (
+                        entry.get("auth_mode") == "oidc"
+                        or entry.get("refresh_token")
+                        or "auth.x.ai" in str(key).lower()
+                        or "accounts.x.ai" in str(key).lower()
+                    )
+                )
+            }
+            if kept:
+                GROK_AUTH_FILE.write_text(
+                    __import__("json").dumps(kept, indent=2), encoding="utf-8"
+                )
+            else:
+                with suppress(FileNotFoundError):
+                    GROK_AUTH_FILE.unlink()
         return settings_payload()
     else:
         raise WebUISettingsError("OAuth logout is not supported for this provider")

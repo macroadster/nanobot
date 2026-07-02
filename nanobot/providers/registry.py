@@ -48,7 +48,7 @@ class ProviderSpec:
 
     # which provider implementation to use
     # "openai_compat" | "anthropic" | "azure_openai" | "openai_codex" | "xai_grok"
-    # | "github_copilot" | "bedrock"
+    # | "github_copilot" | "bedrock" | "grok"
     backend: str = "openai_compat"
 
     # extra env vars / request headers supplied by the provider integration.
@@ -448,6 +448,18 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         display_name="Github Copilot",
         backend="github_copilot",
         default_api_base="https://api.githubcopilot.com",
+        strip_model_prefix=True,
+        is_oauth=True,
+        supports_max_completion_tokens=True,
+    ),
+    # Grok / xAI: API key (XAI_API_KEY) or OIDC via `grok login` (~/.grok/auth.json)
+    ProviderSpec(
+        name="grok",
+        keywords=("grok", "xai"),
+        env_key="XAI_API_KEY",
+        display_name="Grok (xAI)",
+        backend="grok",
+        default_api_base="https://api.x.ai/v1",
         strip_model_prefix=True,
         is_oauth=True,
         supports_max_completion_tokens=True,

@@ -2684,7 +2684,27 @@ def status(
             if p is None:
                 continue
             if spec.is_oauth:
-                console.print(f"{spec.label}: [green]✓ (OAuth)[/green]")
+                if spec.name == "grok":
+                    try:
+                        from nanobot.providers.grok_provider import get_grok_login_status
+
+                        st = get_grok_login_status()
+                        if st.get("configured"):
+                            account = st.get("account") or "logged in"
+                            console.print(
+                                f"{spec.label}: [green]✓ (OIDC)[/green]  [dim]{account}[/dim]"
+                            )
+                        elif p and p.api_key:
+                            console.print(f"{spec.label}: [green]✓ (API key)[/green]")
+                        else:
+                            console.print(
+                                f"{spec.label}: [dim]not set[/dim]  "
+                                f"[dim](run `grok login` or set XAI_API_KEY)[/dim]"
+                            )
+                    except Exception:
+                        console.print(f"{spec.label}: [green]✓ (OAuth)[/green]")
+                else:
+                    console.print(f"{spec.label}: [green]✓ (OAuth)[/green]")
             elif spec.is_local:
                 # Local deployments show api_base instead of api_key
                 if p.api_base:
@@ -2711,6 +2731,7 @@ _PROVIDER_DISPLAY: dict[str, str] = {
     "openai_codex": "OpenAI Codex",
     "xai_grok": "xAI Grok",
     "github_copilot": "GitHub Copilot",
+    "grok": "Grok (xAI)",
 }
 
 _OAUTH_PROVIDER_DEFAULT_MODELS: dict[str, str] = {
@@ -2997,6 +3018,77 @@ def _login_github_copilot() -> None:
         console.print(f"[green]✓ Authenticated with GitHub Copilot[/green]  [dim]{account}[/dim]")
     except Exception as e:
         console.print(f"[red]Authentication error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@_register_login("grok")
+def _login_grok() -> None:
+    """Reuse credentials written by the official Grok CLI (`grok login`)."""
+    from nanobot.providers.grok_provider import GROK_AUTH_FILE, get_grok_login_status
+
+    status = get_grok_login_status()
+    if status.get("configured"):
+        account = status.get("account") or "logged in"
+        console.print(f"[green]✓ Grok OIDC credentials found[/green]  [dim]{account}[/dim]")
+        console.print(f"[dim]Auth file: {GROK_AUTH_FILE}[/dim]")
+        return
+
+    console.print("[yellow]No usable Grok OIDC credentials found.[/yellow]\n")
+    console.print("Authenticate with the official Grok CLI / TUI, then retry:")
+    console.print("  [cyan]grok login[/cyan]")
+    console.print("  [cyan]grok login --oauth[/cyan]\n")
+    console.print(f"Expected auth file: [dim]{GROK_AUTH_FILE}[/dim]")
+    console.print("Or set [cyan]XAI_API_KEY[/cyan] for direct public API access.")
+    raise typer.Exit(1)
+
+
+@_register_logout("grok")
+def _logout_grok() -> None:
+    """Clear local Grok OIDC credentials from ~/.grok/auth.json."""
+    from nanobot.providers.grok_provider import GROK_AUTH_FILE, _load_raw_auth_file
+
+    if not GROK_AUTH_FILE.exists():
+        console.print("[yellow]! No local Grok OIDC credentials found[/yellow]")
+        return
+
+    raw = _load_raw_auth_file()
+    if not raw:
+        console.print("[yellow]! No local Grok OIDC credentials found[/yellow]")
+        return
+
+    # Remove OIDC/browser login entries only; leave unrelated keys intact.
+    kept: dict = {}
+    removed = 0
+    for key, entry in raw.items():
+        if not isinstance(entry, dict):
+            kept[key] = entry
+            continue
+        is_oidc = (
+            entry.get("auth_mode") == "oidc"
+            or entry.get("refresh_token")
+            or "auth.x.ai" in str(key).lower()
+            or "accounts.x.ai" in str(key).lower()
+        )
+        if is_oidc:
+            removed += 1
+            continue
+        kept[key] = entry
+
+    if removed == 0:
+        console.print("[yellow]! No local Grok OIDC credentials found[/yellow]")
+        return
+
+    try:
+        if kept:
+            GROK_AUTH_FILE.write_text(
+                __import__("json").dumps(kept, indent=2), encoding="utf-8"
+            )
+        else:
+            GROK_AUTH_FILE.unlink(missing_ok=True)
+        console.print(f"[green]✓ Logged out from {_PROVIDER_DISPLAY['grok']}[/green]")
+        console.print(f"[dim]Updated: {GROK_AUTH_FILE}[/dim]")
+    except OSError as exc:
+        console.print(f"[red]Could not update {GROK_AUTH_FILE}: {exc}[/red]")
         raise typer.Exit(1)
 
 
