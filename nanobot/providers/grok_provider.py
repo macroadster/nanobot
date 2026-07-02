@@ -8,17 +8,27 @@ stored JWT as a Bearer token.
 The default API base is ``https://api.x.ai/v1`` (OIDC tokens include
 ``api:access`` and work there). Override with ``providers.grok.apiBase`` —
 for example the legacy CLI proxy ``https://cli-chat-proxy.grok.com/v1``.
+
+Requests to the CLI chat proxy must advertise a client version via the
+``x-grok-client-version`` header. Without it the proxy rejects the call with
+HTTP 426 (``Grok CLI version (none) is outdated``). This provider injects
+that header automatically when ``apiBase`` points at the CLI proxy.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
+import subprocess
 import time
 from contextlib import suppress
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
@@ -30,6 +40,15 @@ GROK_PUBLIC_BASE = "https://api.x.ai/v1"
 # Legacy CLI proxy used by `grok` TUI/CLI chat; set providers.grok.apiBase to use it.
 GROK_OIDC_PROXY_BASE = "https://cli-chat-proxy.grok.com/v1"
 
+# Minimum version accepted by cli-chat-proxy.grok.com as of 2026-07.
+GROK_CLI_MIN_VERSION = "0.1.202"
+_GROK_VERSION_RE = re.compile(r"(\d+\.\d+\.\d+(?:[.-][0-9A-Za-z]+)*)")
+
+_HEADER_CLIENT_VERSION = "x-grok-client-version"
+_HEADER_TOKEN_AUTH = "X-XAI-Token-Auth"
+_HEADER_MODEL_OVERRIDE = "x-grok-model-override"
+_TOKEN_AUTH_CLI = "xai-grok-cli"
+
 
 def _normalize_api_base(api_base: str | None) -> str:
     """Return a non-empty API base, defaulting to the public xAI endpoint."""
@@ -38,6 +57,14 @@ def _normalize_api_base(api_base: str | None) -> str:
         if trimmed:
             return trimmed
     return GROK_PUBLIC_BASE
+
+
+def _resolve_grok_home() -> Path:
+    """Resolve GROK_HOME / default ~/.grok, mirroring the official CLI."""
+    explicit = os.getenv("GROK_HOME")
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path.home() / ".grok"
 
 
 def _resolve_grok_auth_path() -> Path:
@@ -51,10 +78,102 @@ def _resolve_grok_auth_path() -> Path:
     explicit = os.getenv("GROK_AUTH_FILE")
     if explicit:
         return Path(explicit).expanduser()
-    grok_home = os.getenv("GROK_HOME")
-    if grok_home:
-        return Path(grok_home).expanduser() / "auth.json"
-    return Path.home() / ".grok" / "auth.json"
+    return _resolve_grok_home() / "auth.json"
+
+
+def is_cli_chat_proxy(api_base: str | None) -> bool:
+    """True when *api_base* targets the legacy Grok CLI chat proxy."""
+    normalized = _normalize_api_base(api_base).lower()
+    if normalized == GROK_OIDC_PROXY_BASE.lower():
+        return True
+    host = urlparse(normalized).hostname or ""
+    return host == "cli-chat-proxy.grok.com" or host.endswith(".cli-chat-proxy.grok.com")
+
+
+def _parse_version_string(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    match = _GROK_VERSION_RE.search(str(raw))
+    return match.group(1) if match else None
+
+
+def _read_version_json(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("version", "stable_version", "client_version"):
+        parsed = _parse_version_string(data.get(key) if isinstance(data.get(key), str) else None)
+        if parsed:
+            return parsed
+    return None
+
+
+def _read_grok_binary_version() -> str | None:
+    binary = shutil.which("grok")
+    if not binary:
+        return None
+    try:
+        completed = subprocess.run(
+            [binary, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except Exception as exc:
+        logger.debug("Failed to run `grok --version`: {}", exc)
+        return None
+    output = (completed.stdout or "") + "\n" + (completed.stderr or "")
+    return _parse_version_string(output)
+
+
+@lru_cache(maxsize=1)
+def resolve_grok_client_version() -> str:
+    """Resolve a client version string acceptable to the CLI chat proxy.
+
+    Precedence:
+    1. ``GROK_CLIENT_VERSION`` env var
+    2. ``~/.grok/version.json`` (written by the official installer/updater)
+    3. ``grok --version`` on ``PATH``
+    4. ``GROK_CLI_MIN_VERSION`` fallback
+    """
+    env = _parse_version_string(os.getenv("GROK_CLIENT_VERSION"))
+    if env:
+        return env
+
+    version_json = _read_version_json(_resolve_grok_home() / "version.json")
+    if version_json:
+        return version_json
+
+    binary_version = _read_grok_binary_version()
+    if binary_version:
+        return binary_version
+
+    return GROK_CLI_MIN_VERSION
+
+
+def build_cli_proxy_headers(
+    *,
+    model: str | None = None,
+    client_version: str | None = None,
+    include_token_auth: bool = True,
+) -> dict[str, str]:
+    """Headers required by ``cli-chat-proxy.grok.com`` for non-CLI clients."""
+    version = client_version or resolve_grok_client_version()
+    headers = {
+        _HEADER_CLIENT_VERSION: version,
+        "User-Agent": f"nanobot (grok-provider; grok-cli/{version})",
+    }
+    if include_token_auth:
+        headers[_HEADER_TOKEN_AUTH] = _TOKEN_AUTH_CLI
+    if model:
+        headers[_HEADER_MODEL_OVERRIDE] = model
+    return headers
 
 
 GROK_AUTH_FILE: Path = _resolve_grok_auth_path()
@@ -270,6 +389,8 @@ class GrokProvider(OpenAICompatProvider):
       key auth against the configured API base (default ``api.x.ai``).
     - Otherwise reads the OIDC JWT from ~/.grok/auth.json and uses it as a
       Bearer token against the same configured API base.
+    - When ``apiBase`` points at the CLI chat proxy, injects the version and
+      auth headers that proxy requires (``x-grok-client-version``, etc.).
     """
 
     def __init__(
@@ -284,6 +405,9 @@ class GrokProvider(OpenAICompatProvider):
         self._last_refresh_attempt: float = 0.0
         self._using_oidc: bool = False
         self._configured_api_base = _normalize_api_base(api_base)
+        self._uses_cli_proxy = is_cli_chat_proxy(self._configured_api_base)
+        self._client_version = resolve_grok_client_version()
+        self._user_extra_headers = dict(extra_headers or {})
 
         self._explicit_api_key = self._resolve_explicit_api_key(provided=api_key)
 
@@ -295,9 +419,7 @@ class GrokProvider(OpenAICompatProvider):
             key_for_client = None
             self._using_oidc = True
 
-        headers = {"User-Agent": "nanobot (grok-provider)"}
-        if extra_headers:
-            headers.update(extra_headers)
+        headers = self._compose_headers(model=default_model)
 
         super().__init__(
             api_key=key_for_client,
@@ -306,6 +428,55 @@ class GrokProvider(OpenAICompatProvider):
             extra_headers=headers,
             spec=find_by_name("grok"),
         )
+
+    def _compose_headers(self, *, model: str | None = None) -> dict[str, str]:
+        """Merge nanobot defaults, CLI-proxy requirements, and user overrides."""
+        headers: dict[str, str] = {"User-Agent": "nanobot (grok-provider)"}
+        target_model = model
+        if not target_model and hasattr(self, "default_model"):
+            target_model = self.default_model
+        if self._uses_cli_proxy:
+            headers.update(
+                build_cli_proxy_headers(
+                    model=target_model,
+                    client_version=self._client_version,
+                    include_token_auth=True,
+                )
+            )
+        headers.update(self._user_extra_headers)
+        return headers
+
+    def _apply_headers(self, headers: dict[str, str]) -> None:
+        """Write composed headers onto the live provider/client state."""
+        changed = any(self._default_headers.get(key) != value for key, value in headers.items())
+        self._default_headers.update(headers)
+        self.extra_headers = dict(headers)
+        if changed and self._client is not None:
+            # Recreate so OpenAI client's frozen default_headers pick up changes.
+            self._client = None
+
+    def _sync_request_headers(self, model: str | None) -> None:
+        """Keep live default headers aligned with the model for CLI proxy calls."""
+        if not self._uses_cli_proxy:
+            return
+        target_model = model or self.default_model
+        self._apply_headers(self._compose_headers(model=target_model))
+
+    def _retarget_api_base(self, new_base: str) -> None:
+        """Update configured base URL and refresh CLI-proxy header mode."""
+        normalized = _normalize_api_base(new_base)
+        self._configured_api_base = normalized
+        self.api_base = normalized
+        self._effective_base = normalized
+        was_cli_proxy = self._uses_cli_proxy
+        self._uses_cli_proxy = is_cli_chat_proxy(normalized)
+        if was_cli_proxy != self._uses_cli_proxy or self._uses_cli_proxy:
+            current_model = None
+            if hasattr(self, "_default_headers"):
+                current_model = self._default_headers.get(_HEADER_MODEL_OVERRIDE)
+            self._apply_headers(
+                self._compose_headers(model=current_model or self.default_model)
+            )
 
     def _resolve_explicit_api_key(self, provided: str | None = None) -> str | None:
         """Return an explicit XAI API key if available.
@@ -397,10 +568,7 @@ class GrokProvider(OpenAICompatProvider):
 
     async def _recreate_client_with_new_base(self, new_base: str, new_key: str) -> None:
         """Recreate the underlying OpenAI client when we switch auth mode or base URL."""
-        normalized = _normalize_api_base(new_base)
-        self._configured_api_base = normalized
-        self.api_base = normalized
-        self._effective_base = normalized
+        self._retarget_api_base(new_base)
         self._api_key_for_client = new_key
         self._client = None
         try:
@@ -427,6 +595,9 @@ class GrokProvider(OpenAICompatProvider):
         tool_choice: str | dict[str, object] | None = None,
     ):
         await self._refresh_client_api_key()
+        # Apply after refresh: token refresh may recreate the client and reset
+        # CLI proxy headers back to default_model.
+        self._sync_request_headers(model)
         return await super().chat(
             messages=messages,
             tools=tools,
@@ -451,6 +622,7 @@ class GrokProvider(OpenAICompatProvider):
         on_tool_call_delta: Any = None,
     ):
         await self._refresh_client_api_key()
+        self._sync_request_headers(model)
         return await super().chat_stream(
             messages=messages,
             tools=tools,
