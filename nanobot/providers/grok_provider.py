@@ -3,8 +3,11 @@
 This provider prefers explicit XAI_API_KEY (or providers.grok.api_key).
 When no API key is available, it falls back to the browser/OIDC login
 credentials written by `grok login` (the Grok Build TUI / CLI) and uses the
-stored JWT as a Bearer token against the public https://api.x.ai/v1 endpoint
-(the OIDC token scopes include ``api:access``).
+stored JWT as a Bearer token.
+
+The default API base is ``https://api.x.ai/v1`` (OIDC tokens include
+``api:access`` and work there). Override with ``providers.grok.apiBase`` —
+for example the legacy CLI proxy ``https://cli-chat-proxy.grok.com/v1``.
 """
 
 from __future__ import annotations
@@ -24,8 +27,17 @@ from nanobot.providers.openai_compat_provider import OpenAICompatProvider
 from nanobot.providers.registry import find_by_name
 
 GROK_PUBLIC_BASE = "https://api.x.ai/v1"
-# Legacy CLI proxy — kept for reference; public API accepts OIDC JWTs with api:access.
+# Legacy CLI proxy used by `grok` TUI/CLI chat; set providers.grok.apiBase to use it.
 GROK_OIDC_PROXY_BASE = "https://cli-chat-proxy.grok.com/v1"
+
+
+def _normalize_api_base(api_base: str | None) -> str:
+    """Return a non-empty API base, defaulting to the public xAI endpoint."""
+    if isinstance(api_base, str):
+        trimmed = api_base.strip().rstrip("/")
+        if trimmed:
+            return trimmed
+    return GROK_PUBLIC_BASE
 
 
 def _resolve_grok_auth_path() -> Path:
@@ -254,21 +266,24 @@ def _persist_refreshed_token(updated_entry: dict[str, Any]) -> None:
 class GrokProvider(OpenAICompatProvider):
     """Provider for Grok models.
 
-    - If an explicit API key is available (config or XAI_API_KEY env), uses the
-      public https://api.x.ai/v1 endpoint with normal key auth.
+    - If an explicit API key is available (config or XAI_API_KEY env), uses
+      key auth against the configured API base (default ``api.x.ai``).
     - Otherwise reads the OIDC JWT from ~/.grok/auth.json and uses it as a
-      Bearer token against the same public endpoint.
+      Bearer token against the same configured API base.
     """
 
     def __init__(
         self,
         default_model: str = "grok-4",
         api_key: str | None = None,
+        api_base: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ):
         self._grok_token: str | None = None
         self._grok_token_expires: float = 0.0
         self._last_refresh_attempt: float = 0.0
         self._using_oidc: bool = False
+        self._configured_api_base = _normalize_api_base(api_base)
 
         self._explicit_api_key = self._resolve_explicit_api_key(provided=api_key)
 
@@ -280,19 +295,23 @@ class GrokProvider(OpenAICompatProvider):
             key_for_client = None
             self._using_oidc = True
 
+        headers = {"User-Agent": "nanobot (grok-provider)"}
+        if extra_headers:
+            headers.update(extra_headers)
+
         super().__init__(
             api_key=key_for_client,
-            api_base=GROK_PUBLIC_BASE,
+            api_base=self._configured_api_base,
             default_model=default_model,
-            extra_headers={"User-Agent": "nanobot (grok-provider)"},
+            extra_headers=headers,
             spec=find_by_name("grok"),
         )
 
     def _resolve_explicit_api_key(self, provided: str | None = None) -> str | None:
-        """Return an explicit XAI API key if available (for public api.x.ai).
+        """Return an explicit XAI API key if available.
 
         Precedence: live XAI_API_KEY env var > providers.grok.api_key from config.
-        Never returns OIDC JWTs (those are only for the internal proxy).
+        Never returns OIDC JWTs from ``~/.grok/auth.json``.
         """
         env = os.getenv("XAI_API_KEY")
         if env and str(env).strip() and str(env).strip() not in ("no-key", ""):
@@ -307,6 +326,15 @@ class GrokProvider(OpenAICompatProvider):
 
         return None
 
+    def _needs_client_update(self, key: str) -> bool:
+        """True when the live client base URL or API key diverges from config."""
+        return (
+            _normalize_api_base(self.api_base) != self._configured_api_base
+            or _normalize_api_base(getattr(self, "_effective_base", None))
+            != self._configured_api_base
+            or self._api_key_for_client != key
+        )
+
     async def _get_fresh_grok_token(self) -> str:
         """Return a valid JWT (either from key or from refreshed OIDC file)."""
         now = time.time()
@@ -314,15 +342,19 @@ class GrokProvider(OpenAICompatProvider):
         # Prefer a real API key when one is configured.
         explicit = self._resolve_explicit_api_key()
         if explicit:
-            if self._using_oidc or self.api_base != GROK_PUBLIC_BASE:
+            if self._using_oidc or self._needs_client_update(explicit):
                 self._using_oidc = False
-                await self._recreate_client_with_new_base(GROK_PUBLIC_BASE, explicit)
+                await self._recreate_client_with_new_base(self._configured_api_base, explicit)
             self._grok_token = explicit
             self._grok_token_expires = now + 31_536_000
             return explicit
 
         # Cached OIDC token still valid?
-        if self._grok_token and now < self._grok_token_expires - _EXPIRY_SKEW_SECONDS:
+        if (
+            self._grok_token
+            and now < self._grok_token_expires - _EXPIRY_SKEW_SECONDS
+            and not self._needs_client_update(self._grok_token)
+        ):
             return self._grok_token
 
         entry = load_grok_oidc_token()
@@ -357,17 +389,18 @@ class GrokProvider(OpenAICompatProvider):
         self._grok_token_expires = exp
         self._using_oidc = True
 
-        # OIDC JWTs from `grok login` carry api:access and work on the public API.
-        if self.api_base != GROK_PUBLIC_BASE or self._api_key_for_client != token:
-            await self._recreate_client_with_new_base(GROK_PUBLIC_BASE, token)
+        if self._needs_client_update(token):
+            await self._recreate_client_with_new_base(self._configured_api_base, token)
 
         self.api_key = token
         return token
 
     async def _recreate_client_with_new_base(self, new_base: str, new_key: str) -> None:
         """Recreate the underlying OpenAI client when we switch auth mode or base URL."""
-        self.api_base = new_base
-        self._effective_base = new_base
+        normalized = _normalize_api_base(new_base)
+        self._configured_api_base = normalized
+        self.api_base = normalized
+        self._effective_base = normalized
         self._api_key_for_client = new_key
         self._client = None
         try:

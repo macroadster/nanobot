@@ -452,7 +452,8 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         is_oauth=True,
         supports_max_completion_tokens=True,
     ),
-    # Grok / xAI: API key (XAI_API_KEY) or OIDC via `grok login` (~/.grok/auth.json)
+    # Grok / xAI: API key (XAI_API_KEY) or OIDC via `grok login` (~/.grok/auth.json).
+    # Override endpoint with providers.grok.apiBase (e.g. https://cli-chat-proxy.grok.com/v1).
     ProviderSpec(
         name="grok",
         keywords=("grok", "xai"),

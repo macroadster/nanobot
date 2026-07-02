@@ -307,6 +307,7 @@ Tracing covers the providers that go through nanobot's OpenAI-compatible client 
 | `openai_codex` | LLM (Codex, OAuth) | `nanobot provider login openai-codex --set-main` |
 | `xai_grok` | LLM (Grok, OAuth) | `nanobot provider login xai-grok --set-main` |
 | `github_copilot` | LLM (GitHub Copilot, OAuth) | `nanobot provider login github-copilot` |
+| `grok` | LLM (Grok / xAI; API key or OIDC via `grok login`) | [console.x.ai](https://console.x.ai) · `nanobot provider login grok` |
 | `qianfan` | LLM (Baidu Qianfan) | [cloud.baidu.com](https://cloud.baidu.com/doc/qianfan/s/Hmh4suq26) |
 
 <details>
@@ -866,6 +867,77 @@ provider-specific model endpoints, and `chat/completions`. nanobot's OpenCode
 providers use the OpenAI-compatible `chat/completions` path, so pick model IDs
 from that endpoint family. The `opencode/...` and `opencode-go/...` prefixes are
 accepted for config readability and stripped before sending the request.
+
+</details>
+
+<details>
+<summary><b>Grok / xAI</b></summary>
+
+Grok accepts either an xAI API key (`XAI_API_KEY` / `providers.grok.apiKey`) or
+OIDC credentials written by the official Grok CLI (`grok login`) to
+`~/.grok/auth.json`. Check login status with:
+
+```bash
+nanobot provider login grok
+```
+
+Default API base is `https://api.x.ai/v1`. OIDC JWTs from `grok login` include
+`api:access` and work on that endpoint.
+
+```json
+{
+  "providers": {
+    "grok": {
+      "apiKey": "${XAI_API_KEY}"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "provider": "grok",
+      "model": "grok-4"
+    }
+  }
+}
+```
+
+With OIDC only (no API key), omit `apiKey` and pin the provider:
+
+```json
+{
+  "providers": {
+    "grok": {}
+  },
+  "agents": {
+    "defaults": {
+      "provider": "grok",
+      "model": "grok-4"
+    }
+  }
+}
+```
+
+Override the endpoint with `apiBase` when you need the legacy CLI chat proxy
+(or another OpenAI-compatible Grok gateway):
+
+```json
+{
+  "providers": {
+    "grok": {
+      "apiBase": "https://cli-chat-proxy.grok.com/v1"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "provider": "grok",
+      "model": "grok-4"
+    }
+  }
+}
+```
+
+`apiBase` is honored for both API-key and OIDC auth. Trailing slashes are
+normalized. Optional `extraHeaders` are merged into requests (nanobot always
+sends a `User-Agent`).
 
 </details>
 
