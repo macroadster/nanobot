@@ -173,13 +173,11 @@ class _ExecSession:
         )
 
     async def kill(self) -> None:
+        # Shared kill path: process-group SIGKILL + owned-PID reap.
         from nanobot.agent.tools.shell import ExecTool
 
         try:
-            if self._process_tree:
-                await ExecTool._kill_process_tree(self.process)
-            else:
-                await ExecTool._kill_process(self.process)
+            await ExecTool._kill_process(self.process)
         finally:
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(

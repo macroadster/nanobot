@@ -113,6 +113,7 @@ class TestSpawnUnix:
 
         kwargs = mock_exec.call_args[1]
         assert kwargs["stdin"] == asyncio.subprocess.DEVNULL
+        assert kwargs["start_new_session"] is True
 
     @pytest.mark.asyncio
     async def test_process_tree_starts_new_session(self):
