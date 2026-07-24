@@ -12,14 +12,14 @@ import pytest
 from nanobot.config.schema import Config, ProvidersConfig
 from nanobot.providers.factory import make_provider
 from nanobot.providers.grok_provider import (
-    GROK_CLI_MIN_VERSION,
-    GROK_OIDC_PROXY_BASE,
-    GROK_PUBLIC_BASE,
-    GrokProvider,
     _HEADER_CLIENT_VERSION,
     _HEADER_MODEL_OVERRIDE,
     _HEADER_TOKEN_AUTH,
     _TOKEN_AUTH_CLI,
+    GROK_CLI_MIN_VERSION,
+    GROK_OIDC_PROXY_BASE,
+    GROK_PUBLIC_BASE,
+    GrokProvider,
     _normalize_api_base,
     build_cli_proxy_headers,
     is_cli_chat_proxy,
@@ -104,8 +104,19 @@ def test_build_cli_proxy_headers_includes_required_fields() -> None:
     assert "nanobot" in headers["User-Agent"]
 
 
+def _load_config(payload: dict[str, object]) -> Config:
+    """Validate a config after forward refs are resolved.
+
+    Importing the schema directly can leave ``Config`` incomplete until the
+    tool-config cycle is broken. Constructing one completes that rebuild.
+    """
+    if not Config.__pydantic_complete__:
+        Config()
+    return Config.model_validate(payload)
+
+
 def test_config_default_api_base_for_grok() -> None:
-    config = Config.model_validate(
+    config = _load_config(
         {
             "agents": {"defaults": {"provider": "grok", "model": "grok-4"}},
             "providers": {"grok": {}},
@@ -117,7 +128,7 @@ def test_config_default_api_base_for_grok() -> None:
 
 
 def test_config_honors_grok_api_base_override() -> None:
-    config = Config.model_validate(
+    config = _load_config(
         {
             "agents": {"defaults": {"provider": "grok", "model": "grok-4"}},
             "providers": {
@@ -187,7 +198,7 @@ def test_grok_provider_user_headers_override_cli_defaults(
 def test_make_provider_passes_grok_api_base(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setenv("GROK_CLIENT_VERSION", "0.2.81")
-    config = Config.model_validate(
+    config = _load_config(
         {
             "agents": {"defaults": {"provider": "grok", "model": "grok-4"}},
             "providers": {

@@ -349,14 +349,50 @@ def _delete_oauth_files(token_path: Path, provider_label: str) -> None:
 
 
 def _login_grok() -> None:
-    """Reuse credentials written by the official Grok CLI (`grok login`)."""
-    from nanobot.providers.grok_provider import GROK_AUTH_FILE, get_grok_login_status
+    """Reuse credentials written by the official Grok CLI (`grok login`).
+
+    If OIDC credentials with a refresh_token are present, this also attempts
+    a token renewal so the xAI token nanobot uses can be refreshed up front.
+    """
+    import asyncio
+
+    from nanobot.providers.grok_provider import (
+        GROK_AUTH_FILE,
+        _attempt_oidc_refresh,
+        get_grok_login_status,
+        load_grok_oidc_token,
+    )
 
     status = get_grok_login_status()
     if status.get("configured"):
         account = status.get("account") or "logged in"
         console.print(f"[green]✓ Grok OIDC credentials found[/green]  [dim]{account}[/dim]")
         console.print(f"[dim]Auth file: {GROK_AUTH_FILE}[/dim]")
+
+        entry = load_grok_oidc_token()
+        if entry and entry.get("refresh_token"):
+            console.print("[dim]Attempting token refresh...[/dim]")
+            proxy = None
+            try:
+                from nanobot.config.loader import load_config, resolve_config_env_vars
+
+                proxy = resolve_config_env_vars(load_config()).providers.grok.proxy or None
+            except Exception:
+                proxy = None
+            try:
+                refreshed = asyncio.run(_attempt_oidc_refresh(entry, proxy=proxy))
+                if refreshed:
+                    new_exp = refreshed.get("expires_at")
+                    console.print("[green]✓ Token refreshed successfully.[/green]")
+                    if new_exp:
+                        console.print(f"[dim]New expires_at: {new_exp}[/dim]")
+                else:
+                    console.print(
+                        "[yellow]! Refresh did not return a new token "
+                        "(may still be valid, or the endpoint returned an error).[/yellow]"
+                    )
+            except Exception as exc:
+                console.print(f"[yellow]! Refresh attempt failed: {exc}[/yellow]")
         return
 
     console.print("[yellow]No usable Grok OIDC credentials found.[/yellow]\n")

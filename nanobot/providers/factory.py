@@ -204,8 +204,9 @@ def _make_provider_core(
         provider = GrokProvider(
             default_model=model,
             api_key=p.api_key if p else None,
-            api_base=config.get_api_base(model, preset=resolved),
+            api_base=config.get_api_base(model, preset=preset),
             extra_headers=p.extra_headers if p else None,
+            proxy=p.proxy if p else None,
         )
     elif backend == "anthropic":
         from nanobot.providers.anthropic_provider import AnthropicProvider
