@@ -81,6 +81,71 @@ def _reap_pid(pid: int) -> None:
         logger.debug("_reap_pid({}): {}", pid, exc)
 
 
+def _reap_process_group(pgid: int) -> None:
+    """Reap exited children that belonged to process group *pgid*.
+
+    After ``killpg``, pipeline members can die while their shell parent is
+    already dead, so they reparent (to PID 1 or a subreaper) as zombies.
+    ``waitid(P_PGID, ...)`` collects only that group — unlike
+    ``waitpid(-1)``, it does not race asyncio's child watcher for
+    unrelated ``create_subprocess_*`` children.
+    """
+    waitid = getattr(os, "waitid", None)
+    p_pgid = getattr(os, "P_PGID", None)
+    wexited = getattr(os, "WEXITED", None)
+    wnohang = getattr(os, "WNOHANG", None)
+    if waitid is None or p_pgid is None or wexited is None or wnohang is None:
+        return
+    while True:
+        try:
+            result = waitid(p_pgid, pgid, wexited | wnohang)
+        except (ChildProcessError, ProcessLookupError):
+            break
+        except OSError as exc:
+            logger.debug("_reap_process_group({}): {}", pgid, exc)
+            break
+        if result is None:
+            break
+
+
+def _signal_process_tree(process: asyncio.subprocess.Process) -> int | None:
+    """Send SIGKILL to *process* and any descendants we own.
+
+    Unix children are spawned with ``start_new_session=True``, so the child
+    is a process-group leader (``pgid == pid``). Killing that group tears
+    down pipelines and background jobs; killing only the shell leaves
+    grandchildren orphaned (and, under Docker PID 1 / a subreaper, as
+    zombies once they exit).
+
+    Only calls ``killpg`` when the child is its own group leader — never
+    when it shares nanobot's process group (would take down the gateway).
+
+    Returns the process-group id when ``killpg`` was used (caller should
+    reap that group), otherwise ``None``.
+    """
+    if process.returncode is not None:
+        return None
+    if _IS_WINDOWS or not process.pid:
+        with suppress(ProcessLookupError):
+            process.kill()
+        return None
+
+    pgid: int | None
+    try:
+        pgid = os.getpgid(process.pid)
+    except (ProcessLookupError, OSError):
+        pgid = None
+
+    if pgid is not None and pgid == process.pid:
+        with suppress(ProcessLookupError, OSError):
+            os.killpg(pgid, signal.SIGKILL)
+            return pgid
+
+    with suppress(ProcessLookupError):
+        process.kill()
+    return None
+
+
 # Policy note appended to recoverable workspace-boundary guard errors.
 _WORKSPACE_BOUNDARY_NOTE = (
     "\n\nNote: this is a hard policy boundary, not a transient failure. "
@@ -617,16 +682,9 @@ class ExecTool(Tool):
         if login and shell_name in {"bash", "bash.exe", "zsh", "zsh.exe"}:
             args.append("-l")
         args.extend(["-c", command])
-        if process_tree:
-            return await asyncio.create_subprocess_exec(
-                *args,
-                stdin=stdin,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-                start_new_session=True,
-            )
+        # New session => child is process-group leader (pgid == pid). That
+        # lets kill paths use killpg to tear down pipelines and background
+        # jobs without touching nanobot's own process group.
         return await asyncio.create_subprocess_exec(
             *args,
             stdin=stdin,
@@ -634,6 +692,7 @@ class ExecTool(Tool):
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
+            start_new_session=True,
         )
 
     @staticmethod
@@ -709,27 +768,36 @@ class ExecTool(Tool):
 
     @staticmethod
     async def _kill_process(process: asyncio.subprocess.Process) -> None:
-        """Kill a subprocess and reap it to prevent zombies.
+        """Kill a subprocess (and its process group) and reap it.
 
         Safe to call when the process has already exited (e.g. generic
         exception handlers after a successful ``communicate()``): skips
-        ``kill()`` and only runs the safety-net reap.
+        signalling and only runs the safety-net reap.
+
+        On Unix, children are process-group leaders (``start_new_session``);
+        the whole group is SIGKILL'd so pipelines and background jobs do
+        not outlive the shell and later reparent as zombies.
         """
         if process.returncode is not None:
             _reap_pid(process.pid)
             return
+        pgid: int | None = None
         try:
-            with suppress(ProcessLookupError):
-                process.kill()
+            pgid = _signal_process_tree(process)
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(process.wait(), timeout=5.0)
         finally:
+            # Collect group members that died without a living parent to
+            # wait() them (common after killpg on pipelines).
+            if pgid is not None:
+                _reap_process_group(pgid)
             _reap_pid(process.pid)
 
     @staticmethod
     async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
         """Kill a session process and descendants, then reap the root process."""
         owner = ExecTool._process_tree_owner(process)
+        killed_group = False
         try:
             if owner is not None:
                 owner.terminate()
@@ -749,6 +817,7 @@ class ExecTool(Tool):
             else:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
+                    killed_group = True
                 except (ProcessLookupError, PermissionError):
                     pass
 
@@ -760,6 +829,8 @@ class ExecTool(Tool):
         finally:
             if owner is not None:
                 ExecTool._drop_process_tree_owner(process)
+            if killed_group:
+                _reap_process_group(process.pid)
             _reap_pid(process.pid)
 
     @staticmethod

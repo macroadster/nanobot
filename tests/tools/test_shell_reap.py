@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import shlex
+import signal
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from nanobot.agent.tools.exec_session import _ExecSession
-from nanobot.agent.tools.shell import ExecTool, _reap_pid
+from nanobot.agent.tools.shell import (
+    ExecTool,
+    _reap_pid,
+    _reap_process_group,
+    _signal_process_tree,
+)
 
 
 def _python_command(code: str) -> str:
@@ -45,6 +53,86 @@ def test_reap_pid_swallows_already_reaped_errors():
 
         mock_os.waitpid = MagicMock(side_effect=ProcessLookupError("gone"))
         _reap_pid(99)
+
+
+def test_signal_process_tree_killpg_when_group_leader():
+    """Child is session leader (pgid == pid) → kill the whole group."""
+    process = MagicMock()
+    process.pid = 5001
+    process.returncode = None
+    process.kill = MagicMock()
+
+    with (
+        patch("nanobot.agent.tools.shell._IS_WINDOWS", False),
+        patch("nanobot.agent.tools.shell.os.getpgid", return_value=5001) as getpgid,
+        patch("nanobot.agent.tools.shell.os.killpg") as killpg,
+    ):
+        pgid = _signal_process_tree(process)
+
+    assert pgid == 5001
+    getpgid.assert_called_once_with(5001)
+    killpg.assert_called_once_with(5001, signal.SIGKILL)
+    process.kill.assert_not_called()
+
+
+def test_signal_process_tree_never_killpg_foreign_group():
+    """If child shares another pgid, do not killpg (would hit nanobot itself)."""
+    process = MagicMock()
+    process.pid = 5002
+    process.returncode = None
+    process.kill = MagicMock()
+
+    with (
+        patch("nanobot.agent.tools.shell._IS_WINDOWS", False),
+        patch("nanobot.agent.tools.shell.os.getpgid", return_value=1),
+        patch("nanobot.agent.tools.shell.os.killpg") as killpg,
+    ):
+        pgid = _signal_process_tree(process)
+
+    assert pgid is None
+    killpg.assert_not_called()
+    process.kill.assert_called_once()
+
+
+def test_signal_process_tree_falls_back_when_getpgid_fails():
+    process = MagicMock()
+    process.pid = 5003
+    process.returncode = None
+    process.kill = MagicMock()
+
+    with (
+        patch("nanobot.agent.tools.shell._IS_WINDOWS", False),
+        patch(
+            "nanobot.agent.tools.shell.os.getpgid",
+            side_effect=ProcessLookupError("gone"),
+        ),
+        patch("nanobot.agent.tools.shell.os.killpg") as killpg,
+    ):
+        pgid = _signal_process_tree(process)
+
+    assert pgid is None
+    killpg.assert_not_called()
+    process.kill.assert_called_once()
+
+
+def test_reap_process_group_uses_waitid_p_pgid():
+    with patch("nanobot.agent.tools.shell.os") as mock_os:
+        mock_os.waitid = MagicMock(side_effect=[object(), None])
+        mock_os.P_PGID = 2
+        mock_os.WEXITED = 4
+        mock_os.WNOHANG = 1
+        _reap_process_group(4242)
+        assert mock_os.waitid.call_count == 2
+        mock_os.waitid.assert_called_with(2, 4242, 4 | 1)
+
+
+def test_reap_process_group_noops_without_waitid():
+    with patch("nanobot.agent.tools.shell.os") as mock_os:
+        mock_os.waitid = None
+        mock_os.P_PGID = 2
+        mock_os.WEXITED = 4
+        mock_os.WNOHANG = 1
+        _reap_process_group(1)  # must not raise
 
 
 @pytest.mark.asyncio
@@ -395,18 +483,38 @@ async def test_exec_session_poll_reaps_after_exit():
         await asyncio.gather(session._stdout_task, session._stderr_task, return_exceptions=True)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="zombie reaping is a Unix waitpid concern")
-@pytest.mark.asyncio
-async def test_real_timeout_leaves_no_zombie(tmp_path):
-    """Integration: timed-out sleep should not leave a defunct child of this process."""
-    import os
+def _direct_children() -> list[tuple[int, str, str]]:
+    """Return (pid, name, state) for processes whose parent is this test process."""
+    mypid = os.getpid()
+    children: list[tuple[int, str, str]] = []
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return children
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            status = (entry / "status").read_text()
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+        meta: dict[str, str] = {}
+        for line in status.splitlines():
+            if line.startswith(("Name:", "State:", "PPid:")):
+                key, _, value = line.partition(":")
+                meta[key] = value.strip()
+        try:
+            ppid = int(meta.get("PPid", "").split()[0])
+        except (ValueError, IndexError):
+            continue
+        if ppid == mypid:
+            name = meta.get("Name", "?")
+            state = meta.get("State", "?")
+            children.append((int(entry.name), name, state))
+    return children
 
-    tool = ExecTool(working_dir=str(tmp_path), timeout=1)
-    result = await tool.execute(command="sleep 30", timeout=1)
-    assert "timed out" in result.lower()
 
-    await asyncio.sleep(0.05)
-    reaped = []
+def _harvest_zombies() -> list[tuple[int, int]]:
+    reaped: list[tuple[int, int]] = []
     while True:
         try:
             pid, status = os.waitpid(-1, os.WNOHANG)
@@ -415,4 +523,64 @@ async def test_real_timeout_leaves_no_zombie(tmp_path):
         if pid == 0:
             break
         reaped.append((pid, status))
-    assert reaped == [], f"unreaped children left as zombies: {reaped}"
+    return reaped
+
+
+def _enable_child_subreaper() -> bool:
+    """Become a subreaper so orphans reparent to us (Docker-like). Best-effort."""
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        # PR_SET_CHILD_SUBREAPER = 36 on Linux
+        return libc.prctl(36, 1, 0, 0, 0) == 0
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="zombie reaping is a Unix waitpid concern")
+@pytest.mark.asyncio
+async def test_real_timeout_leaves_no_zombie(tmp_path):
+    """Integration: simple timed-out sleep must not leave a defunct child."""
+    tool = ExecTool(working_dir=str(tmp_path), timeout=1)
+    result = await tool.execute(command="sleep 30", timeout=1)
+    assert "timed out" in result.lower()
+
+    await asyncio.sleep(0.05)
+    assert _harvest_zombies() == []
+    leftovers = [c for c in _direct_children() if c[1] in {"sleep", "bash", "sh", "cat"}]
+    assert leftovers == [], f"leftover children after simple timeout: {leftovers}"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process-group kill is a Unix concern")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sleep 30 | cat",
+        "sleep 30 & wait",
+        "(sleep 30)",
+        "bash -c 'sleep 30; true'",
+    ],
+)
+async def test_real_timeout_kills_pipeline_descendants(tmp_path, command):
+    """Timeout must kill the whole process group, not just the outer shell."""
+    _enable_child_subreaper()
+    _harvest_zombies()
+
+    tool = ExecTool(working_dir=str(tmp_path), timeout=1)
+    result = await tool.execute(command=command, timeout=1)
+    assert "timed out" in result.lower()
+
+    await asyncio.sleep(0.1)
+
+    zombies = _harvest_zombies()
+    assert zombies == [], f"unreaped zombies after {command!r}: {zombies}"
+
+    leftovers = [
+        c
+        for c in _direct_children()
+        if c[1] in {"sleep", "bash", "sh", "cat", "dash"}
+    ]
+    assert leftovers == [], f"orphan descendants after {command!r}: {leftovers}"
