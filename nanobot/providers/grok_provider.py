@@ -286,7 +286,9 @@ def get_grok_login_status() -> dict[str, Any]:
     }
 
 
-async def _attempt_oidc_refresh(entry: dict[str, Any]) -> dict[str, Any] | None:
+async def _attempt_oidc_refresh(
+    entry: dict[str, Any], *, proxy: str | None = None
+) -> dict[str, Any] | None:
     """Try to refresh using the refresh_token. Returns updated entry dict or None."""
     refresh_token = entry.get("refresh_token")
     if not refresh_token:
@@ -307,21 +309,36 @@ async def _attempt_oidc_refresh(entry: dict[str, Any]) -> dict[str, Any] | None:
         "client_id": client_id,
     }
 
+    # Use headers that resemble the official Grok CLI client to improve
+    # compatibility with any upstream protection on the token endpoint.
+    version = resolve_grok_client_version()
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": f"nanobot (grok-oidc; grok-cli/{version})",
+    }
+
     timeout = httpx.Timeout(15.0, connect=10.0)
+    client_kwargs: dict[str, Any] = {
+        "timeout": timeout,
+        "follow_redirects": True,
+        "trust_env": True,
+    }
+    if proxy:
+        client_kwargs["proxy"] = proxy
+
     try:
-        async with httpx.AsyncClient(
-            timeout=timeout, follow_redirects=True, trust_env=True
-        ) as client:
+        async with httpx.AsyncClient(**client_kwargs) as client:
             resp = await client.post(
                 GROK_OIDC_TOKEN_URL,
                 data=data,
-                headers={"Accept": "application/json"},
+                headers=headers,
             )
             if resp.status_code >= 400:
                 logger.debug(
                     "Grok OIDC refresh failed: {} {}",
                     resp.status_code,
-                    resp.text[:200],
+                    resp.text[:300],
                 )
                 return None
             payload = resp.json()
@@ -343,6 +360,7 @@ async def _attempt_oidc_refresh(entry: dict[str, Any]) -> dict[str, Any] | None:
         updated["expires_at"] = payload["expires_at"]
 
     _persist_refreshed_token(updated)
+    logger.info("Refreshed Grok OIDC access token (expires_at={})", updated.get("expires_at"))
     return updated
 
 
@@ -399,6 +417,7 @@ class GrokProvider(OpenAICompatProvider):
         api_key: str | None = None,
         api_base: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        proxy: str | None = None,
     ):
         self._grok_token: str | None = None
         self._grok_token_expires: float = 0.0
@@ -408,6 +427,7 @@ class GrokProvider(OpenAICompatProvider):
         self._uses_cli_proxy = is_cli_chat_proxy(self._configured_api_base)
         self._client_version = resolve_grok_client_version()
         self._user_extra_headers = dict(extra_headers or {})
+        self._proxy = proxy or None
 
         self._explicit_api_key = self._resolve_explicit_api_key(provided=api_key)
 
@@ -427,6 +447,7 @@ class GrokProvider(OpenAICompatProvider):
             default_model=default_model,
             extra_headers=headers,
             spec=find_by_name("grok"),
+            proxy=self._proxy,
         )
 
     def _compose_headers(self, *, model: str | None = None) -> dict[str, str]:
@@ -507,10 +528,16 @@ class GrokProvider(OpenAICompatProvider):
         )
 
     async def _get_fresh_grok_token(self) -> str:
-        """Return a valid JWT (either from key or from refreshed OIDC file)."""
+        """Return a valid JWT (either from key or from refreshed OIDC file).
+
+        For OIDC (no explicit key) we always re-read ~/.grok/auth.json so that:
+        - External updates by the official `grok` CLI (hot reload) are picked up.
+        - Our own refresh can take effect for this and future calls immediately.
+        - We decide refresh using the on-disk expires_at / refresh_token state.
+        """
         now = time.time()
 
-        # Prefer a real API key when one is configured.
+        # Prefer a real API key when one is configured (long-lived, no frequent re-read needed).
         explicit = self._resolve_explicit_api_key()
         if explicit:
             if self._using_oidc or self._needs_client_update(explicit):
@@ -520,14 +547,8 @@ class GrokProvider(OpenAICompatProvider):
             self._grok_token_expires = now + 31_536_000
             return explicit
 
-        # Cached OIDC token still valid?
-        if (
-            self._grok_token
-            and now < self._grok_token_expires - _EXPIRY_SKEW_SECONDS
-            and not self._needs_client_update(self._grok_token)
-        ):
-            return self._grok_token
-
+        # OIDC path: always consult the latest on-disk state (cheap) to support
+        # background refreshes performed by `grok` itself or by us.
         entry = load_grok_oidc_token()
         if not entry:
             raise RuntimeError(
@@ -544,7 +565,7 @@ class GrokProvider(OpenAICompatProvider):
 
         if needs_refresh:
             self._last_refresh_attempt = now
-            refreshed = await _attempt_oidc_refresh(entry)
+            refreshed = await _attempt_oidc_refresh(entry, proxy=self._proxy)
             if refreshed:
                 entry = refreshed
                 exp = _parse_expires_at(entry.get("expires_at"))
@@ -584,6 +605,53 @@ class GrokProvider(OpenAICompatProvider):
         client.api_key = token
         return token
 
+    def _is_likely_auth_error(self, exc: Exception) -> bool:
+        """Heuristic to detect expired/invalid OIDC token errors from the xAI API."""
+        text = str(exc).lower()
+        if "401" in text or "unauthorized" in text or "invalid" in text and "token" in text:
+            return True
+        if "authentication" in text or "forbidden" in text and "auth" in text:
+            return True
+        # openai SDK errors
+        name = type(exc).__name__.lower()
+        if "auth" in name or "authenticationerror" in name:
+            return True
+        # Some responses surface status
+        status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (401, 403):
+            return True
+        return False
+
+    async def _force_oidc_refresh(self) -> bool:
+        """Force an OIDC refresh attempt right now (ignoring normal time gates for this call)."""
+        if not self._using_oidc:
+            return False
+        entry = load_grok_oidc_token()
+        if not entry or not entry.get("refresh_token"):
+            return False
+        # Allow refresh even if we recently tried (user is explicitly recovering).
+        self._last_refresh_attempt = 0.0
+        refreshed = await _attempt_oidc_refresh(entry, proxy=self._proxy)
+        if not refreshed:
+            return False
+        # Adopt the fresh token immediately
+        token = refreshed.get("key")
+        if not (isinstance(token, str) and token):
+            return False
+        exp = _parse_expires_at(refreshed.get("expires_at")) or (time.time() + 3600)
+        self._grok_token = token
+        self._grok_token_expires = exp
+        if self._needs_client_update(token):
+            await self._recreate_client_with_new_base(self._configured_api_base, token)
+        self.api_key = token
+        try:
+            client = await self._ensure_client()
+            client.api_key = token
+        except Exception:
+            pass
+        logger.info("Grok OIDC token force-refreshed after auth error")
+        return True
+
     async def chat(
         self,
         messages: list[dict[str, object]],
@@ -598,15 +666,30 @@ class GrokProvider(OpenAICompatProvider):
         # Apply after refresh: token refresh may recreate the client and reset
         # CLI proxy headers back to default_model.
         self._sync_request_headers(model)
-        return await super().chat(
-            messages=messages,
-            tools=tools,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            tool_choice=tool_choice,
-        )
+        try:
+            return await super().chat(
+                messages=messages,
+                tools=tools,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                tool_choice=tool_choice,
+            )
+        except Exception as exc:
+            if self._using_oidc and self._is_likely_auth_error(exc):
+                if await self._force_oidc_refresh():
+                    self._sync_request_headers(model)
+                    return await super().chat(
+                        messages=messages,
+                        tools=tools,
+                        model=model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        reasoning_effort=reasoning_effort,
+                        tool_choice=tool_choice,
+                    )
+            raise
 
     async def chat_stream(
         self,
@@ -623,18 +706,36 @@ class GrokProvider(OpenAICompatProvider):
     ):
         await self._refresh_client_api_key()
         self._sync_request_headers(model)
-        return await super().chat_stream(
-            messages=messages,
-            tools=tools,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            tool_choice=tool_choice,
-            on_content_delta=on_content_delta,
-            on_thinking_delta=on_thinking_delta,
-            on_tool_call_delta=on_tool_call_delta,
-        )
+        try:
+            return await super().chat_stream(
+                messages=messages,
+                tools=tools,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                tool_choice=tool_choice,
+                on_content_delta=on_content_delta,
+                on_thinking_delta=on_thinking_delta,
+                on_tool_call_delta=on_tool_call_delta,
+            )
+        except Exception as exc:
+            if self._using_oidc and self._is_likely_auth_error(exc):
+                if await self._force_oidc_refresh():
+                    self._sync_request_headers(model)
+                    return await super().chat_stream(
+                        messages=messages,
+                        tools=tools,
+                        model=model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        reasoning_effort=reasoning_effort,
+                        tool_choice=tool_choice,
+                        on_content_delta=on_content_delta,
+                        on_thinking_delta=on_thinking_delta,
+                        on_tool_call_delta=on_tool_call_delta,
+                    )
+            raise
 
     def get_default_model(self) -> str:
         return self.default_model

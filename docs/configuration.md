@@ -875,7 +875,16 @@ accepted for config readability and stripped before sending the request.
 
 Grok accepts either an xAI API key (`XAI_API_KEY` / `providers.grok.apiKey`) or
 OIDC credentials written by the official Grok CLI (`grok login`) to
-`~/.grok/auth.json`. Check login status with:
+`~/.grok/auth.json`. 
+
+`nanobot provider login grok` reports status and will attempt to renew the
+OIDC access token using the stored refresh_token when available. The provider
+also refreshes automatically when a token is near expiry (per `expires_at` in
+the file) and will retry once on auth errors (401) during chat calls. The
+`~/.grok/auth.json` file is re-read for every request to pick up external
+updates ("hot reload").
+
+Check / force-renew with:
 
 ```bash
 nanobot provider login grok
