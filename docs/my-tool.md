@@ -73,6 +73,7 @@ my(action="check", key="web_config.enable")
 | "Where is your working directory?" | `check("workspace")` |
 | "Show me your full config" | `check()` |
 | "Are there any subagents running?" | `check("subagents")` — shows phase, iteration, elapsed time, tool events |
+| "Are you watching a live stream?" | `check("stream_monitors")` — or call `monitor(action="list")` |
 
 ---
 
@@ -203,6 +204,7 @@ Can be checked but not set:
 | Category | Attributes | Reason |
 |----------|-----------|--------|
 | Subagent manager | `subagents` | Observable, but replacing breaks the system |
+| Stream monitors | `stream_monitors` | Live SSE subscriptions; replacing breaks the system |
 | Execution config | `exec_config` | Can check sandbox/enable status, cannot change it |
 | Web config | `web_config` | Can check enable status, cannot change it |
 | Iteration counter | `_current_iteration` | Updated by runner only |

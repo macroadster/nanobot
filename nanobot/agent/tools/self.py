@@ -42,6 +42,12 @@ def _is_subagent_status(value: Any) -> bool:
     return isinstance(value, SubagentStatus)
 
 
+def _is_stream_monitor_status(value: Any) -> bool:
+    from nanobot.agent.stream_monitor import StreamMonitorStatus
+
+    return isinstance(value, StreamMonitorStatus)
+
+
 class MyTool(Tool):
     """Check and set the agent loop's runtime configuration."""
 
@@ -74,6 +80,7 @@ class MyTool(Tool):
 
     READ_ONLY = frozenset({
         "subagents",  # observable but replacing it would break the system
+        "stream_monitors",  # live SSE monitors; replacing would break the system
         "_current_iteration",  # updated by runner only
         "exec_config",  # inspect allowed (e.g. check sandbox), modify blocked
         "web_config",  # inspect allowed (e.g. check enable), modify blocked
@@ -258,7 +265,18 @@ class MyTool(Tool):
             header = f"Subagent [{val.task_id}] '{val.label}'"
             detail = MyTool._format_status(val, "  ")
             return f"{header}\n  task: {val.task_description}\n{detail}"
-        # SubagentManager: delegate to its _task_statuses dict
+        if _is_stream_monitor_status(val):
+            last = (
+                f"{time.monotonic() - val.last_event_at:.0f}s ago"
+                if val.last_event_at is not None
+                else "none"
+            )
+            return (
+                f"Monitor [{val.monitor_id}] '{val.label}' "
+                f"phase={val.phase} events={val.events_dispatched}/{val.events_seen} "
+                f"last={last}"
+            )
+        # SubagentManager / StreamMonitorManager: delegate to _task_statuses
         if hasattr(val, "_task_statuses") and isinstance(val._task_statuses, dict):
             return MyTool._format_value(val._task_statuses, key)
         if isinstance(val, Mapping) and val and _is_subagent_status(next(iter(val.values()))):
@@ -267,6 +285,12 @@ class MyTool(Tool):
             for tid, st in val.items():
                 detail = MyTool._format_status(st, "    ")
                 lines.append(f"  [{tid}] '{st.label}'\n{detail}")
+            return "\n".join(lines)
+        if isinstance(val, Mapping) and val and _is_stream_monitor_status(next(iter(val.values()))):
+            prefix = f"{key}: " if key else ""
+            lines = [f"{prefix}{len(val)} stream monitor(s):"]
+            for tid, st in val.items():
+                lines.append(f"  [{tid}] {MyTool._format_value(st)}")
             return "\n".join(lines)
         if hasattr(val, "tool_names"):
             return f"tools: {len(val.tool_names)} registered — {val.tool_names}"
@@ -400,7 +424,7 @@ class MyTool(Tool):
             "model_preset",
         ))
         # Other useful top-level keys shown in description
-        for k in ("workspace", "provider_retry_mode", "max_tool_result_chars", "_current_iteration", "web_config", "exec_config", "workspace_sandbox", "subagents"):
+        for k in ("workspace", "provider_retry_mode", "max_tool_result_chars", "_current_iteration", "web_config", "exec_config", "workspace_sandbox", "subagents", "stream_monitors"):
             if _has_real_attr(state, k):
                 parts.append(self._format_value(getattr(state, k, None), k))
         # Token usage

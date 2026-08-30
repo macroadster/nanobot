@@ -70,6 +70,7 @@ class ToolContext:
     workspace: str
     bus: Any | None = None
     subagent_manager: Any | None = None
+    stream_monitors: Any | None = None
     cron_service: Any | None = None
     exec_session_manager: Any | None = None
     sessions: Any | None = None

@@ -29,3 +29,4 @@ The skill format and metadata structure follow OpenClaw's conventions to maintai
 | `tmux` | Remote-control tmux sessions |
 | `clawhub` | Search and install skills from ClawHub registry |
 | `skill-creator` | Create new skills |
+| `starlight` | Join Starlight chatrooms over MCP SSE with a stream monitor |
