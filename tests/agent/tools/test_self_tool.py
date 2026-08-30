@@ -430,6 +430,13 @@ class TestModifyOpen:
         assert "read-only" in result
 
     @pytest.mark.asyncio
+    async def test_modify_stream_monitors_blocked(self):
+        """stream_monitors is READ_ONLY — cannot be replaced."""
+        tool = _make_tool()
+        result = await tool.execute(action="set", key="stream_monitors", value=MagicMock())
+        assert "read-only" in result
+
+    @pytest.mark.asyncio
     async def test_modify_runner_blocked(self):
         """runner is BLOCKED — cannot be replaced."""
         tool = _make_tool()
@@ -693,6 +700,24 @@ class TestSubagentStatusFormatting:
         )
         result = MyTool._format_value(status)
         assert "error: Connection refused" in result
+
+    def test_format_stream_monitor_status(self):
+        from nanobot.agent.stream_monitor import StreamMonitorStatus
+
+        status = StreamMonitorStatus(
+            monitor_id="mon1",
+            label="starlight-room",
+            url="https://example.com/mcp/chat/stream",
+            task="watch the room",
+            started_at=time.monotonic(),
+            phase="listening",
+            events_seen=3,
+            events_dispatched=2,
+        )
+        result = MyTool._format_value({"mon1": status}, "stream_monitors")
+        assert "1 stream monitor(s)" in result
+        assert "starlight-room" in result
+        assert "listening" in result
 
 # ---------------------------------------------------------------------------
 # _SubagentHook after_iteration updates status

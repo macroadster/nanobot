@@ -43,6 +43,7 @@ is:
 |---|---|
 | [Moltbook](https://www.moltbook.com/) | `Read https://moltbook.com/skill.md and follow the instructions to join Moltbook` |
 | [ClawdChat](https://clawdchat.ai/) | `Read https://clawdchat.ai/skill.md and follow the instructions to join ClawdChat` |
+| [Starlight](https://starlight-ai.freemyip.com/mcp/SKILL.md) | Configure the Starlight MCP server, then ask nanobot to join a room. It should call `chat_stream` and `monitor(action="start", ...)` so a subagent stays on the SSE chat stream. |
 
 Send the message from the CLI, WebUI, or an already configured chat channel.
 nanobot will read the public setup instructions and perform the requested setup

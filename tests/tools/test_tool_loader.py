@@ -246,6 +246,22 @@ def test_cron_tool_create():
     assert isinstance(tool, CronTool)
 
 
+def test_monitor_tool_enabled_without_manager():
+    from nanobot.agent.tools.monitor import MonitorTool
+    mock_config = MagicMock()
+    ctx = ToolContext(config=mock_config, workspace="/tmp", stream_monitors=None)
+    assert MonitorTool.enabled(ctx) is False
+
+
+def test_monitor_tool_create():
+    from nanobot.agent.tools.monitor import MonitorTool
+    mock_mgr = MagicMock()
+    mock_config = MagicMock()
+    ctx = ToolContext(config=mock_config, workspace="/tmp", stream_monitors=mock_mgr)
+    tool = MonitorTool.create(ctx)
+    assert isinstance(tool, MonitorTool)
+
+
 # --- Task 6: ExecTool, WebTools, ImageGenerationTool ---
 
 
@@ -410,6 +426,7 @@ def test_loader_registers_same_tools_as_old_hardcoded():
         workspace="/tmp",
         bus=MagicMock(),
         subagent_manager=MagicMock(),
+        stream_monitors=MagicMock(),
         cron_service=MagicMock(),
         timezone="UTC",
     )
@@ -421,7 +438,7 @@ def test_loader_registers_same_tools_as_old_hardcoded():
         "read_file", "write_file", "edit_file", "list_dir",
         "find_files", "grep", "exec", "write_stdin", "list_exec_sessions",
         "web_search", "web_fetch",
-        "message", "spawn", "cron",
+        "message", "spawn", "cron", "monitor",
     }
     actual = set(registered)
     assert expected <= actual, f"Missing tools: {expected - actual}"

@@ -26,6 +26,7 @@ from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
+from nanobot.agent.stream_monitor import StreamMonitorManager
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from nanobot.agent.tools.exec_session import ExecSessionManager
@@ -399,6 +400,14 @@ class AgentLoop:
         self._unified_session = unified_session
         self._running = False
         self._mcp_servers = mcp_servers or {}
+        self.stream_monitors = StreamMonitorManager(
+            workspace=workspace,
+            bus=bus,
+            subagents=self.subagents,
+            parent_registry=self.tools,
+            mcp_servers=lambda: self._mcp_servers,
+            llm_wall_timeout_for_session=lambda sk: runner_wall_llm_timeout_s(self.sessions, sk),
+        )
         self._mcp_stacks: dict[str, MCPConnection] = {}
         self._mcp_connecting = False
         self._runtime_context_providers: list[RuntimeContextProvider] = []
@@ -608,6 +617,7 @@ class AgentLoop:
             workspace=str(self.workspace),
             bus=self.bus,
             subagent_manager=self.subagents,
+            stream_monitors=self.stream_monitors,
             cron_service=self.cron_service,
             exec_session_manager=self._exec_session_manager,
             sessions=self.sessions,
@@ -1233,11 +1243,14 @@ class AgentLoop:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
             self._background_tasks.clear()
         errors: list[BaseException] = []
-        cleanup_steps = (
+        cleanup_steps = [
             self.subagents.close,
             self._exec_session_manager.close_all,
             lambda: agent_context.close_mcp(self),
-        )
+        ]
+        stream_monitors = getattr(self, "stream_monitors", None)
+        if stream_monitors is not None:
+            cleanup_steps.insert(1, stream_monitors.close)
         for cleanup in cleanup_steps:
             try:
                 await cleanup()
