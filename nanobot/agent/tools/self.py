@@ -23,6 +23,7 @@ from nanobot.agent.tools.runtime_control import (
 from nanobot.config_base import Base
 
 if TYPE_CHECKING:
+    from nanobot.agent.stream_monitor import StreamMonitorStatus
     from nanobot.agent.subagent import SubagentStatus
     from nanobot.agent.tools.context import ToolContext
 
@@ -37,6 +38,21 @@ def _is_subagent_status(value: object) -> TypeGuard[SubagentStatus]:
     from nanobot.agent.subagent import SubagentStatus
 
     return isinstance(value, SubagentStatus)
+
+
+def _is_stream_monitor_status(value: object) -> TypeGuard[StreamMonitorStatus]:
+    from nanobot.agent.stream_monitor import StreamMonitorStatus
+
+    return isinstance(value, StreamMonitorStatus)
+
+
+def _is_stream_monitor_status_snapshot(value: object) -> TypeGuard[Mapping[str, object]]:
+    if not isinstance(value, Mapping):
+        return False
+    return all(
+        field in value
+        for field in ("monitor_id", "label", "url", "task", "phase")
+    )
 
 
 def _is_subagent_status_snapshot(value: object) -> TypeGuard[Mapping[str, object]]:
@@ -95,6 +111,7 @@ class MyTool(Tool):
 
     READ_ONLY = frozenset({
         "subagents",  # observable but replacing it would break the system
+        "stream_monitors",  # live SSE monitors; replacing would break the system
         "tool_names",
         "exec_config",  # inspect allowed (e.g. check sandbox), modify blocked
         "web_config",  # inspect allowed (e.g. check enable), modify blocked
@@ -293,11 +310,42 @@ class MyTool(Tool):
         return "\n".join(lines)
 
     @staticmethod
+    def _format_stream_monitor(val: object) -> str:
+        if _is_stream_monitor_status(val):
+            monitor_id = val.monitor_id
+            label = val.label
+            phase = val.phase
+            dispatched = val.events_dispatched
+            seen = val.events_seen
+            last_event_at = val.last_event_at
+        elif _is_stream_monitor_status_snapshot(val):
+            monitor_id = val.get("monitor_id", "?")
+            label = val.get("label", "?")
+            phase = val.get("phase", "?")
+            dispatched = val.get("events_dispatched", 0)
+            seen = val.get("events_seen", 0)
+            last_event_at = val.get("last_event_at")
+        else:
+            return repr(val)
+        if isinstance(last_event_at, (int, float)):
+            last = f"{time.monotonic() - last_event_at:.0f}s ago"
+        else:
+            last = "none"
+        return (
+            f"Monitor [{monitor_id}] '{label}' "
+            f"phase={phase} events={dispatched}/{seen} last={last}"
+        )
+
+    @staticmethod
     def _format_value(val: Any, key: str = "") -> str:
         if _is_subagent_status(val):
             header = f"Subagent [{val.task_id}] '{val.label}'"
             detail = MyTool._format_status(val, "  ")
             return f"{header}\n  task: {val.task_description}\n{detail}"
+        if _is_stream_monitor_status(val):
+            return MyTool._format_stream_monitor(val)
+        if _is_stream_monitor_status_snapshot(val):
+            return MyTool._format_stream_monitor(val)
         if _is_subagent_status_snapshot(val):
             header = f"Subagent [{val['task_id']}] '{val['label']}'"
             detail = MyTool._format_status(val, "  ")
@@ -329,6 +377,18 @@ class MyTool(Tool):
                 else:
                     continue
                 lines.append(f"  [{tid}] '{label}'\n{detail}")
+            return "\n".join(lines)
+        if (
+            mapping
+            and (
+                _is_stream_monitor_status(next(iter(mapping.values())))
+                or _is_stream_monitor_status_snapshot(next(iter(mapping.values())))
+            )
+        ):
+            prefix = f"{key}: " if key else ""
+            lines = [f"{prefix}{len(mapping)} stream monitor(s):"]
+            for tid, st in mapping.items():
+                lines.append(f"  [{tid}] {MyTool._format_stream_monitor(st)}")
             return "\n".join(lines)
         # Scalar types — repr is fine
         if isinstance(val, (str, int, float, bool, type(None))):
@@ -452,6 +512,7 @@ class MyTool(Tool):
             "web_config",
             "exec_config",
             "subagents",
+            "stream_monitors",
         ):
             parts.append(self._format_value(values[k], k))
         if snapshot.scratchpad:

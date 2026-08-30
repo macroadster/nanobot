@@ -34,6 +34,7 @@ RUNTIME_SNAPSHOT_KEYS = frozenset({
     "web_config",
     "exec_config",
     "subagents",
+    "stream_monitors",
 })
 
 RUNTIME_COMMAND_KEYS = frozenset({
@@ -63,6 +64,7 @@ class RuntimeSnapshot:
     web_config: dict[str, object]
     exec_config: dict[str, object]
     subagent_statuses: dict[str, dict[str, object]]
+    stream_monitor_statuses: dict[str, dict[str, object]]
     scratchpad: dict[str, JsonValue]
 
     def as_mapping(self) -> Mapping[str, object]:
@@ -80,6 +82,7 @@ class RuntimeSnapshot:
             "web_config": self.web_config,
             "exec_config": self.exec_config,
             "subagents": {"_task_statuses": self.subagent_statuses},
+            "stream_monitors": {"_task_statuses": self.stream_monitor_statuses},
         }
         assert values.keys() == RUNTIME_SNAPSHOT_KEYS
         return values
@@ -177,6 +180,9 @@ class AgentRuntimeControl:
             web_config=_snapshot_web_config(target.web_config),
             exec_config=_snapshot_exec_config(target.exec_config),
             subagent_statuses=_snapshot_subagent_statuses(target.subagents),
+            stream_monitor_statuses=_snapshot_stream_monitor_statuses(
+                getattr(target, "stream_monitors", None),
+            ),
             scratchpad=_snapshot_json_mapping(self.__scratchpad),
         )
 
@@ -286,6 +292,37 @@ def _snapshot_subagent_status(status: SubagentStatus) -> dict[str, object]:
         "usage": status.usage.to_dict() if status.usage is not None else None,
         "stop_reason": status.stop_reason,
         "error": status.error,
+    }
+
+
+def _snapshot_stream_monitor_statuses(manager: object) -> dict[str, dict[str, object]]:
+    statuses = getattr(manager, "_task_statuses", None)
+    if not isinstance(statuses, Mapping):
+        return {}
+    return {
+        str(monitor_id): _snapshot_stream_monitor_status(status)
+        for monitor_id, status in statuses.items()
+        if _is_stream_monitor_status(status)
+    }
+
+
+def _is_stream_monitor_status(status: object) -> bool:
+    required = ("monitor_id", "label", "url", "task", "started_at", "phase")
+    return all(hasattr(status, name) for name in required)
+
+
+def _snapshot_stream_monitor_status(status: object) -> dict[str, object]:
+    return {
+        "monitor_id": getattr(status, "monitor_id", None),
+        "label": getattr(status, "label", None),
+        "url": getattr(status, "url", None),
+        "task": getattr(status, "task", None),
+        "started_at": getattr(status, "started_at", None),
+        "phase": getattr(status, "phase", None),
+        "events_seen": getattr(status, "events_seen", 0),
+        "events_dispatched": getattr(status, "events_dispatched", 0),
+        "last_event_at": getattr(status, "last_event_at", None),
+        "error": getattr(status, "error", None),
     }
 
 

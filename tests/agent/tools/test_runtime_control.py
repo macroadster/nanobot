@@ -72,6 +72,7 @@ def test_runtime_snapshot_has_exact_allowlist_and_redacts_secrets(tmp_path: Path
         "web_config",
         "exec_config",
         "subagents",
+        "stream_monitors",
     })
     assert RUNTIME_SNAPSHOT_KEYS == expected_snapshot_keys
     assert frozenset(values) == expected_snapshot_keys

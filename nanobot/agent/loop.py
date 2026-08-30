@@ -30,6 +30,7 @@ from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.runner import AgentRunner, AgentRunResult, AgentRunSpec
+from nanobot.agent.stream_monitor import StreamMonitorManager
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from nanobot.agent.tools.exec_session import ExecSessionManager
@@ -400,6 +401,13 @@ class AgentLoop:
             max_concurrent_subagents=max_concurrent_subagents,
             consolidator=self.consolidator,
         )
+        self.stream_monitors = StreamMonitorManager(
+            workspace=workspace,
+            bus=bus,
+            subagents=self.subagents,
+            parent_registry=self.tools,
+            mcp_servers=lambda: self.tools_config.mcp_servers,
+        )
         self._unified_session = unified_session
         self._running = False
         self._runtime_context_providers: list[RuntimeContextProvider] = []
@@ -619,6 +627,7 @@ class AgentLoop:
             workspace=str(self.workspace),
             bus=self.bus,
             subagent_manager=self.subagents,
+            stream_monitors=self.stream_monitors,
             cron_service=self.cron_service,
             exec_session_manager=self._exec_session_manager,
             sessions=self.sessions,
@@ -1684,6 +1693,7 @@ class AgentLoop:
 
         cleanup_steps = (
             self.subagents.close,
+            self.stream_monitors.close,
             self._exec_session_manager.close_all,
         )
         for cleanup in cleanup_steps:
