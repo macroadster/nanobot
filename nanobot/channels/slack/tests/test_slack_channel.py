@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -555,6 +557,113 @@ async def test_dm_thread_message_keeps_thread_ts_and_threaded_session() -> None:
     assert kwargs["metadata"]["slack"]["thread_ts"] == "1700000000.000100"
 
 
+def _channel_mention_request(envelope_id: str, ts: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        type="events_api",
+        envelope_id=envelope_id,
+        payload={
+            "event": {
+                "type": "app_mention",
+                "user": "U1",
+                "channel": "C123",
+                "text": "<@UBOT> hello",
+                "ts": ts,
+            }
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_channel_root_message_uses_thread_scoped_session() -> None:
+    """A channel mention that opens a thread belongs to that thread's session."""
+    channel = SlackChannel(SlackConfig(enabled=True), MessageBus())
+    channel._bot_user_id = "UBOT"
+    channel._web_client = _FakeAsyncWebClient()
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+
+    req = _channel_mention_request("env-c1", "1700000000.000100")
+
+    await channel._on_socket_request(client, req)
+
+    channel._handle_message.assert_awaited_once()
+    kwargs = channel._handle_message.await_args.kwargs
+    assert kwargs["session_key"] == "slack:C123:1700000000.000100"
+    assert kwargs["metadata"]["slack"]["thread_ts"] == "1700000000.000100"
+
+
+@pytest.mark.asyncio
+async def test_channel_root_messages_do_not_share_one_session() -> None:
+    """Two threads opened in the same channel must not collapse into one session."""
+    channel = SlackChannel(SlackConfig(enabled=True), MessageBus())
+    channel._bot_user_id = "UBOT"
+    channel._web_client = _FakeAsyncWebClient()
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+
+    first = _channel_mention_request("env-c1", "1700000000.000100")
+    second = _channel_mention_request("env-c2", "1700000000.000200")
+
+    await channel._on_socket_request(client, first)
+    await channel._on_socket_request(client, second)
+
+    session_keys = [call.kwargs["session_key"] for call in channel._handle_message.await_args_list]
+    assert session_keys == [
+        "slack:C123:1700000000.000100",
+        "slack:C123:1700000000.000200",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_channel_root_message_without_reply_in_thread_uses_channel_session() -> None:
+    """With reply_in_thread disabled no thread is opened, so the channel session is used."""
+    channel = SlackChannel(SlackConfig(enabled=True, reply_in_thread=False), MessageBus())
+    channel._bot_user_id = "UBOT"
+    channel._web_client = _FakeAsyncWebClient()
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+
+    req = _channel_mention_request("env-c3", "1700000000.000300")
+
+    await channel._on_socket_request(client, req)
+
+    channel._handle_message.assert_awaited_once()
+    kwargs = channel._handle_message.await_args.kwargs
+    assert kwargs["session_key"] is None
+    assert kwargs["metadata"]["slack"]["thread_ts"] is None
+
+
+@pytest.mark.asyncio
+async def test_channel_thread_reply_keeps_thread_session() -> None:
+    """A reply inside a channel thread stays in the session opened by the root message."""
+    channel = SlackChannel(SlackConfig(enabled=True), MessageBus())
+    channel._bot_user_id = "UBOT"
+    channel._web_client = _FakeAsyncWebClient()
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+    channel._with_thread_context = AsyncMock(return_value="hello")  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+    req = SimpleNamespace(
+        type="events_api",
+        envelope_id="env-c4",
+        payload={
+            "event": {
+                "type": "app_mention",
+                "user": "U1",
+                "channel": "C123",
+                "text": "<@UBOT> follow up",
+                "ts": "1700000000.000400",
+                "thread_ts": "1700000000.000100",
+            }
+        },
+    )
+
+    await channel._on_socket_request(client, req)
+
+    channel._handle_message.assert_awaited_once()
+    kwargs = channel._handle_message.await_args.kwargs
+    assert kwargs["session_key"] == "slack:C123:1700000000.000100"
+
+
 @pytest.mark.asyncio
 async def test_slack_slash_command_skips_thread_context() -> None:
     channel = SlackChannel(SlackConfig(enabled=True, allow_from=[]), MessageBus())
@@ -730,3 +839,120 @@ def test_to_mrkdwn_still_converts_unfenced_markdown_tables() -> None:
 
     assert "| a | b |" not in out
     assert "a" in out and "1" in out and "b" in out and "2" in out
+
+
+# ── file download SSRF ─────────────────────────────────────────────
+
+
+def _patch_download_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> None:
+    monkeypatch.setattr(
+        "nanobot.channels.slack.runtime.PinnedDNSAsyncTransport",
+        lambda: httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr("nanobot.channels.slack.runtime.httpx_env_proxy_mounts", lambda: {})
+
+
+def _patch_download_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    validated: list[str],
+) -> None:
+    def validate(url: str) -> tuple[bool, str]:
+        validated.append(url)
+        if "169.254.169.254" in url:
+            return False, "blocked metadata address"
+        return True, ""
+
+    monkeypatch.setattr("nanobot.channels.slack.runtime.validate_url_target", validate)
+
+
+@pytest.mark.asyncio
+async def test_download_blocks_ssrf_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An internal file URL is rejected before the transport sees it."""
+    requests: list[httpx.Request] = []
+    validated: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, content=b"should not be fetched")
+
+    _patch_download_transport(monkeypatch, handler)
+    _patch_download_validation(monkeypatch, validated)
+    channel = SlackChannel(SlackConfig(enabled=True, bot_token="xoxb-test"), MessageBus())
+    url = "http://169.254.169.254/latest/meta-data/"
+
+    path, _marker = await channel._download_slack_file(
+        {"id": "F1", "name": "x.bin", "url_private_download": url}
+    )
+
+    assert path is None
+    assert requests == []
+    assert validated == [url]
+
+
+@pytest.mark.asyncio
+async def test_download_blocks_unsafe_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect targets are validated before the redirected request is sent."""
+    requests: list[httpx.Request] = []
+    validated: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            302,
+            headers={"location": "http://169.254.169.254/latest/meta-data/"},
+        )
+
+    _patch_download_transport(monkeypatch, handler)
+    _patch_download_validation(monkeypatch, validated)
+    channel = SlackChannel(SlackConfig(enabled=True, bot_token="xoxb-test"), MessageBus())
+    url = "https://files.slack.com/files-pri/x"
+
+    path, _marker = await channel._download_slack_file(
+        {"id": "F1", "name": "x.bin", "url_private_download": url}
+    )
+
+    assert path is None
+    assert len(requests) == 1
+    assert validated == [url, "http://169.254.169.254/latest/meta-data/"]
+
+
+@pytest.mark.asyncio
+async def test_download_follows_safe_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Public redirects still download the file without forwarding cross-host auth."""
+    requests: list[httpx.Request] = []
+    validated: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "files.slack.com":
+            return httpx.Response(302, headers={"location": "https://cdn.example/file.bin"})
+        return httpx.Response(
+            200,
+            content=b"filedata",
+            headers={"content-type": "application/octet-stream"},
+        )
+
+    _patch_download_transport(monkeypatch, handler)
+    _patch_download_validation(monkeypatch, validated)
+    monkeypatch.setattr(
+        "nanobot.channels.slack.runtime.get_media_dir", lambda _channel=None: str(tmp_path)
+    )
+    channel = SlackChannel(SlackConfig(enabled=True, bot_token="xoxb-test"), MessageBus())
+    url = "https://files.slack.com/files-pri/x"
+
+    path, marker = await channel._download_slack_file(
+        {"id": "F1", "name": "x.bin", "url_private_download": url}
+    )
+
+    assert path is not None
+    assert Path(path).read_bytes() == b"filedata"
+    assert marker == "[file: x.bin]"
+    assert validated == [url, "https://cdn.example/file.bin"]
+    assert requests[0].headers["Authorization"] == "Bearer xoxb-test"
+    assert "Authorization" not in requests[1].headers

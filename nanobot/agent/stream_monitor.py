@@ -595,7 +595,6 @@ class StreamMonitorManager:
                 max_tool_result_chars=self._subagents.max_tool_result_chars,
                 max_iterations_message="Stop. Reply only if the latest event still needs a response.",
                 finalize_on_max_iterations=True,
-                fail_on_tool_error=False,
                 error_message=None,
                 session_key=sess_key,
                 workspace=self.workspace,

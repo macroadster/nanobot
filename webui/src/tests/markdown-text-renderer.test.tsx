@@ -13,6 +13,32 @@ describe("MarkdownTextRenderer", () => {
     expect(link).toHaveClass("text-blue-500", "dark:text-blue-300");
   });
 
+  it("renders canonical session references as same-tab links", () => {
+    render(
+      <MarkdownTextRenderer>
+        {"We discussed this in [收费设计](#session/websocket%3Apricing)."}
+      </MarkdownTextRenderer>,
+    );
+
+    const link = screen.getByRole("link", { name: "收费设计" });
+    expect(link).toHaveAttribute("href", "#/chat/websocket%3Apricing");
+    expect(link).not.toHaveAttribute("target");
+    expect(link.getAttribute("style")).toContain(
+      "text-decoration-color: var(--inline-token-highlight)",
+    );
+  });
+
+  it("does not link non-WebUI session references", () => {
+    const { container } = render(
+      <MarkdownTextRenderer>
+        {"[private channel](#session/telegram%3Aprivate)"}
+      </MarkdownTextRenderer>,
+    );
+
+    expect(container).toHaveTextContent("private channel");
+    expect(container.querySelector("a")).toBeNull();
+  });
+
   it("does not render active URL protocols from untrusted markdown", () => {
     const { container } = render(
       <MarkdownTextRenderer>
@@ -405,6 +431,26 @@ describe("MarkdownTextRenderer", () => {
     expect(screen.queryByRole("button", { name: /tasks/i })).not.toBeInTheDocument();
   });
 
+  it("keeps loose ordered-list titles beside their markers", () => {
+    const { container } = render(
+      <MarkdownTextRenderer streaming>
+        {
+          "1. **一个约 16 MB 的 CLI 可执行文件**\n   - `~/.local/bin/inferencesh`\n   - `belt` 和 `infsh` 只是指向它的软链接。\n\n2. **登录凭据文件**\n   - `~/.inferencesh/config.json`\n   - 权限是 `600`。\n\n3. **Shell PATH 配置**\n   - `.zshrc`"
+        }
+      </MarkdownTextRenderer>,
+    );
+
+    const items = container.querySelectorAll("ol > li");
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveClass("[&>p]:inline");
+    expect(items[0].firstElementChild).toHaveTextContent(
+      "一个约 16 MB 的 CLI 可执行文件",
+    );
+    expect(items[0].querySelector("ul")).toHaveTextContent(
+      "~/.local/bin/inferencesh",
+    );
+  });
+
   it("renders GFM tables in a responsive data surface", () => {
     const { container } = render(
       <MarkdownTextRenderer>
@@ -424,31 +470,28 @@ describe("MarkdownTextRenderer", () => {
     expect(container.firstElementChild).not.toHaveClass("space-y-0");
   });
 
-  it("uses Streamdown's incremental reveal while content is streaming", () => {
+  it("keeps streaming parsing without a competing reveal animation", () => {
     const { container } = render(
       <MarkdownTextRenderer streaming>春天</MarkdownTextRenderer>,
     );
 
-    expect(container.firstElementChild).toHaveClass(
+    expect(container).toHaveTextContent("春天");
+    expect(container.firstElementChild).not.toHaveClass(
       "[&>*:last-child]:after:content-[var(--streamdown-caret)]",
     );
-    const animatedUnits = container.querySelectorAll<HTMLElement>("[data-sd-animate]");
-    expect(animatedUnits).toHaveLength(1);
-    expect(animatedUnits[0]).toHaveTextContent("春天");
-    expect(animatedUnits[0].getAttribute("style")).toContain("--sd-duration: 180ms");
+    expect(container.querySelector("[data-sd-animate]")).not.toBeInTheDocument();
   });
 
-  it("removes animation markup when a streamed response completes", async () => {
+  it("does not add animation markup when a streamed response completes", () => {
     const { container, rerender } = render(
       <MarkdownTextRenderer streaming>春天</MarkdownTextRenderer>,
     );
-    expect(container.querySelector("[data-sd-animate]")).toBeInTheDocument();
+    expect(container.querySelector("[data-sd-animate]")).not.toBeInTheDocument();
 
     rerender(<MarkdownTextRenderer>春天</MarkdownTextRenderer>);
 
-    await waitFor(() => {
-      expect(container.querySelector("[data-sd-animate]")).not.toBeInTheDocument();
-    });
+    expect(container).toHaveTextContent("春天");
+    expect(container.querySelector("[data-sd-animate]")).not.toBeInTheDocument();
   });
 
   it("does not create one DOM node per CJK character for long responses", () => {
@@ -456,7 +499,7 @@ describe("MarkdownTextRenderer", () => {
       <MarkdownTextRenderer streaming>{"长".repeat(6_001)}</MarkdownTextRenderer>,
     );
 
-    expect(container.querySelectorAll("[data-sd-animate]")).toHaveLength(1);
+    expect(container.querySelector("[data-sd-animate]")).not.toBeInTheDocument();
     expect(container.querySelector("[data-nanobot-stream-unit]")).not.toBeInTheDocument();
   });
 
@@ -506,6 +549,21 @@ describe("MarkdownTextRenderer", () => {
     expect(screen.getByRole("link", { name: "links" })).not.toHaveAttribute("node");
   });
 
+  it("renders bold CJK text when more CJK text follows immediately", () => {
+    render(
+      <MarkdownTextRenderer streaming>
+        {
+          "**结论：目前看风险可控，没有发现常驻或可疑安装。**如果你之后不想再用，我可以帮你彻底卸载。"
+        }
+      </MarkdownTextRenderer>,
+    );
+
+    expect(
+      screen.getByText("结论：目前看风险可控，没有发现常驻或可疑安装。").tagName,
+    ).toBe("STRONG");
+    expect(screen.getByText(/如果你之后不想再用/)).toBeInTheDocument();
+  });
+
   it("adds line numbers to multiline fenced code without changing inline code", () => {
     render(
       <MarkdownTextRenderer highlightCode={false}>
@@ -531,6 +589,21 @@ describe("MarkdownTextRenderer", () => {
       "VBeats mentions $24 million, while Globe states a total of $130.6 million since founding.",
     );
     expect(container.querySelector(".katex")).toBeNull();
+  });
+
+  it("keeps currency rates and later totals out of one inline math span", () => {
+    const { container } = render(
+      <MarkdownTextRenderer>
+        {
+          "费用预估为 **$0.10/5秒（720p）**，在余额内。我选择做一条 **8秒、16:9、带自然环境音** 的电影感梦幻片，预计约 **$0.16**，现在开始生成。"
+        }
+      </MarkdownTextRenderer>,
+    );
+
+    expect(container.querySelector(".katex")).toBeNull();
+    expect(container).toHaveTextContent("$0.10/5秒（720p）");
+    expect(container).toHaveTextContent("$0.16");
+    expect(container.querySelectorAll("strong")).toHaveLength(3);
   });
 
   it("renders guarded single-dollar inline math", () => {

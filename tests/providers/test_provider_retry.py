@@ -3,12 +3,19 @@ import copy
 
 import pytest
 
-from nanobot.providers.base import RETRY_AFTER_BUFFER, GenerationSettings, LLMProvider, LLMResponse
+from nanobot.providers.base import (
+    RETRY_AFTER_BUFFER,
+    GenerationSettings,
+    LLMProvider,
+    LLMResponse,
+    ProviderCallContext,
+    ProviderConversationState,
+)
 
 
 class ScriptedProvider(LLMProvider):
     def __init__(self, responses):
-        super().__init__()
+        super().__init__(provider_name="scripted")
         self._responses = list(responses)
         self.calls = 0
         self.last_kwargs: dict = {}
@@ -122,7 +129,40 @@ async def test_chat_with_retry_emits_terminal_progress_when_standard_retries_exh
     )
 
     assert response.content == "503 final server error"
-    assert progress[-1] == "Model request failed after 4 retries, giving up."
+    assert progress[-1] == "Model request failed after 4 attempts, giving up."
+
+
+@pytest.mark.asyncio
+async def test_chat_with_retry_routes_terminal_progress_to_explicit_callback(monkeypatch) -> None:
+    provider = ScriptedProvider([
+        LLMResponse(content="429 rate limit a", finish_reason="error"),
+        LLMResponse(content="429 rate limit b", finish_reason="error"),
+        LLMResponse(content="429 rate limit c", finish_reason="error"),
+        LLMResponse(content="503 final server error", finish_reason="error"),
+    ])
+    retry_progress: list[str] = []
+    terminal_progress: list[str] = []
+
+    async def _fake_sleep(delay: int) -> None:
+        return None
+
+    async def _retry_progress(msg: str) -> None:
+        retry_progress.append(msg)
+
+    async def _terminal_progress(msg: str) -> None:
+        terminal_progress.append(msg)
+
+    monkeypatch.setattr("nanobot.providers.base.asyncio.sleep", _fake_sleep)
+
+    response = await provider.chat_with_retry(
+        messages=[{"role": "user", "content": "hello"}],
+        on_retry_wait=_retry_progress,
+        on_retry_exhausted=_terminal_progress,
+    )
+
+    assert response.content == "503 final server error"
+    assert not any("giving up" in message for message in retry_progress)
+    assert terminal_progress == ["Model request failed after 4 attempts, giving up."]
 
 
 @pytest.mark.asyncio
@@ -328,6 +368,83 @@ async def test_successful_image_retry_mutates_original_messages_in_place() -> No
     assert isinstance(content, list)
     assert all(block.get("type") != "image_url" for block in content)
     assert any("not delivered" in (block.get("text") or "").lower() for block in content)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("messages", "payload", "pending_messages"),
+    [
+        (_IMAGE_MSG, {}, _IMAGE_MSG),
+        (
+            [{"role": "user", "content": "continue"}],
+            {
+                "items": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,abc",
+                            }
+                        ],
+                    }
+                ]
+            },
+            [],
+        ),
+    ],
+    ids=["pending-image", "opaque-payload-image"],
+)
+async def test_image_retry_discards_provider_state_with_images(
+    messages,
+    payload,
+    pending_messages,
+) -> None:
+    class ContextScriptedProvider(ScriptedProvider):
+        def __init__(self, responses):
+            super().__init__(responses)
+            self.contexts: list[ProviderCallContext] = []
+
+        async def chat_with_context(
+            self,
+            *,
+            provider_context: ProviderCallContext,
+            **kwargs,
+        ) -> LLMResponse:
+            self.contexts.append(provider_context)
+            return await self.chat(**kwargs)
+
+    provider = ContextScriptedProvider([
+        LLMResponse(content="model does not support images", finish_reason="error"),
+        LLMResponse(content="ok, no image"),
+    ])
+    messages = copy.deepcopy(messages)
+    state = ProviderConversationState(
+        kind="openai_responses",
+        provider="openai:test",
+        model="gpt-5.6",
+        version=1,
+        payload=copy.deepcopy(payload),
+        pending_messages=copy.deepcopy(pending_messages),
+    )
+
+    response = await provider.chat_with_retry(
+        messages=messages,
+        provider_context=ProviderCallContext(
+            conversation_state=state,
+            session_id="webui:cache-test",
+        ),
+    )
+
+    assert response.content == "ok, no image"
+    retry_context = provider.contexts[-1]
+    assert isinstance(retry_context, ProviderCallContext)
+    assert retry_context.conversation_state is None
+    assert retry_context.session_id == "webui:cache-test"
+    public_content = messages[0]["content"]
+    if isinstance(public_content, list):
+        assert all(block.get("type") != "image_url" for block in public_content)
 
 
 @pytest.mark.asyncio

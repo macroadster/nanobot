@@ -661,6 +661,8 @@ class GrokProvider(OpenAICompatProvider):
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, object] | None = None,
+        provider_context: Any = None,
+        **kwargs: Any,
     ):
         await self._refresh_client_api_key()
         # Apply after refresh: token refresh may recreate the client and reset
@@ -675,6 +677,8 @@ class GrokProvider(OpenAICompatProvider):
                 temperature=temperature,
                 reasoning_effort=reasoning_effort,
                 tool_choice=tool_choice,
+                provider_context=provider_context,
+                **kwargs,
             )
         except Exception as exc:
             if self._using_oidc and self._is_likely_auth_error(exc):
@@ -688,6 +692,8 @@ class GrokProvider(OpenAICompatProvider):
                         temperature=temperature,
                         reasoning_effort=reasoning_effort,
                         tool_choice=tool_choice,
+                        provider_context=provider_context,
+                        **kwargs,
                     )
             raise
 
@@ -703,6 +709,8 @@ class GrokProvider(OpenAICompatProvider):
         on_content_delta: Any = None,
         on_thinking_delta: Any = None,
         on_tool_call_delta: Any = None,
+        provider_context: Any = None,
+        **kwargs: Any,
     ):
         await self._refresh_client_api_key()
         self._sync_request_headers(model)
@@ -718,6 +726,8 @@ class GrokProvider(OpenAICompatProvider):
                 on_content_delta=on_content_delta,
                 on_thinking_delta=on_thinking_delta,
                 on_tool_call_delta=on_tool_call_delta,
+                provider_context=provider_context,
+                **kwargs,
             )
         except Exception as exc:
             if self._using_oidc and self._is_likely_auth_error(exc):
@@ -734,6 +744,8 @@ class GrokProvider(OpenAICompatProvider):
                         on_content_delta=on_content_delta,
                         on_thinking_delta=on_thinking_delta,
                         on_tool_call_delta=on_tool_call_delta,
+                        provider_context=provider_context,
+                        **kwargs,
                     )
             raise
 

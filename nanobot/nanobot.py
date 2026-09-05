@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 
 from nanobot.agent.hook import AgentHook, SDKCaptureHook
 from nanobot.agent.hooks import create_file_edit_activity_hook
 from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tools.mcp import MCPProvider
+from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.config.schema import Config
+from nanobot.providers.base import LLMUsage
 from nanobot.providers.image_generation import image_gen_provider_configs
 from nanobot.sdk.clients import MemoryClient, RuntimeClient, SessionClient
 from nanobot.sdk.runtime import (
@@ -41,6 +44,7 @@ from nanobot.utils.llm_runtime import LLMRuntime
 
 __all__ = [
     "Nanobot",
+    "LLMUsage",
     "RunResult",
     "RunStream",
     "SessionInfo",
@@ -71,9 +75,16 @@ class Nanobot:
         print(result.content)
     """
 
-    def __init__(self, loop: AgentLoop, *, config: Config | None = None) -> None:
+    def __init__(
+        self,
+        loop: AgentLoop,
+        *,
+        config: Config | None = None,
+        mcp_provider: MCPProvider | None = None,
+    ) -> None:
         self._loop = loop
         self._config = config
+        self._mcp_provider = mcp_provider
         self.sessions = SessionClient(loop)
         self.memory = MemoryClient(loop)
         self.runtime = RuntimeClient(loop)
@@ -105,7 +116,10 @@ class Nanobot:
             if not resolved.exists():
                 raise FileNotFoundError(f"Config not found: {resolved}")
 
-        config: Config = resolve_config_env_vars(load_config(resolved))
+        config: Config = resolve_config_env_vars(
+            load_config(resolved),
+            config_path=resolved,
+        )
         if workspace is not None:
             config.agents.defaults.workspace = str(
                 Path(workspace).expanduser().resolve()
@@ -117,12 +131,15 @@ class Nanobot:
         elif model_preset is not None:
             config.agents.defaults.model_preset = model_preset
 
+        tools = ToolRegistry()
+        mcp_provider = MCPProvider.from_config(config, tools)
         loop = AgentLoop.from_config(
             config,
             image_generation_provider_configs=image_gen_provider_configs(config),
             hook_factories=[create_file_edit_activity_hook],
+            tool_registry=tools,
         )
-        return cls(loop, config=config)
+        return cls(loop, config=config, mcp_provider=mcp_provider)
 
     async def run(
         self,
@@ -134,6 +151,7 @@ class Nanobot:
         sender_id: str = "user",
         media: list[str] | None = None,
         ephemeral: bool = False,
+        attributes: Mapping[str, Any] | None = None,
         hooks: list[AgentHook] | None = None,
         model: str | None = None,
         model_preset: str | None = None,
@@ -149,6 +167,9 @@ class Nanobot:
             sender_id: Logical sender identifier for runtime context.
             media: Optional local media paths attached to the message.
             ephemeral: If true, do not persist the turn or compact session history.
+            attributes: Optional caller-owned request data exposed to context
+                providers and turn-hook factories. Attributes are kept separate
+                from nanobot's trusted internal message metadata.
             hooks: Optional lifecycle hooks for this run.
             model: Override the model for this run only.
             model_preset: Override the model preset for this run only.
@@ -167,9 +188,12 @@ class Nanobot:
             sender_id=sender_id,
             media=media,
             ephemeral=ephemeral,
+            attributes=attributes,
         )
         if runtime is not None:
             kwargs["runtime"] = runtime
+        if self._mcp_provider is not None:
+            await self._mcp_provider.connect()
         response = await self._loop.process_direct(
             message,
             **kwargs,
@@ -188,6 +212,7 @@ class Nanobot:
         sender_id: str = "user",
         media: list[str] | None = None,
         ephemeral: bool = False,
+        attributes: Mapping[str, Any] | None = None,
         hooks: list[AgentHook] | None = None,
         model: str | None = None,
         model_preset: str | None = None,
@@ -242,6 +267,7 @@ class Nanobot:
                 sender_id=sender_id,
                 media=media,
                 ephemeral=ephemeral,
+                attributes=attributes,
                 on_stream=_on_stream,
                 on_stream_end=_on_stream_end,
             )
@@ -249,6 +275,8 @@ class Nanobot:
             if override_runtime is not None:
                 kwargs["runtime"] = override_runtime
             try:
+                if self._mcp_provider is not None:
+                    await self._mcp_provider.connect()
                 response = await self._loop.process_direct(
                     message,
                     **kwargs,
@@ -261,7 +289,7 @@ class Nanobot:
                     type=STREAM_EVENT_RUN_COMPLETED,
                     content=result.content,
                     result=result,
-                    usage=dict(result.usage),
+                    usage=result.usage,
                     metadata=dict(result.metadata),
                 ))
                 return result
@@ -274,7 +302,7 @@ class Nanobot:
                 ))
                 raise
             finally:
-                emitter.close()
+                await emitter.close()
 
         task = asyncio.create_task(_run())
         return RunStream(task, queue)
@@ -289,6 +317,7 @@ class Nanobot:
         sender_id: str = "user",
         media: list[str] | None = None,
         ephemeral: bool = False,
+        attributes: Mapping[str, Any] | None = None,
         hooks: list[AgentHook] | None = None,
         model: str | None = None,
         model_preset: str | None = None,
@@ -302,6 +331,7 @@ class Nanobot:
             sender_id=sender_id,
             media=media,
             ephemeral=ephemeral,
+            attributes=attributes,
             hooks=hooks,
             model=model,
             model_preset=model_preset,
@@ -315,8 +345,12 @@ class Nanobot:
                 await run.aclose()
 
     async def aclose(self) -> None:
-        """Release resources held by this instance (MCP connections, etc.)."""
-        await self._loop.close_mcp()
+        """Release resources held by this instance."""
+        try:
+            await self._loop.aclose()
+        finally:
+            if self._mcp_provider is not None:
+                await self._mcp_provider.aclose()
 
     async def __aenter__(self) -> Nanobot:
         return self

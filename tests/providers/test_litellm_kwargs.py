@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from nanobot.providers.base import ProviderCallContext
 from nanobot.providers.openai_compat_provider import OpenAICompatProvider
 from nanobot.providers.registry import find_by_name
 
@@ -298,8 +299,8 @@ def _fake_chat_stream_legacy_function_call_chunks():
 
 
 @pytest.mark.asyncio
-async def test_openai_compat_stream_forwards_reasoning_deltas_deepseek_style() -> None:
-    """Regression: DeepSeek-V4 / reasoner expose ``delta.reasoning_content`` during streaming."""
+async def test_openai_compat_chat_stream_forwards_reasoning_deltas_deepseek_style() -> None:
+    """DeepSeek Chat Completions exposes ``delta.reasoning_content`` while streaming."""
     mock_chat = AsyncMock(return_value=_fake_chat_stream_reasoning_chunks())
     spec = find_by_name("deepseek")
     thinking: list[str] = []
@@ -320,6 +321,7 @@ async def test_openai_compat_stream_forwards_reasoning_deltas_deepseek_style() -
             default_model="deepseek-v4-pro",
             spec=spec,
         )
+        provider._api_type = "chat_completions"
         result = await provider.chat_stream(
             messages=[{"role": "user", "content": "hi"}],
             model="deepseek-v4-pro",
@@ -333,6 +335,77 @@ async def test_openai_compat_stream_forwards_reasoning_deltas_deepseek_style() -
     assert result.reasoning_content == "step1step2"
     assert result.content == "answer"
     mock_chat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deepseek_v4_pro_uses_responses_api() -> None:
+    mock_chat = AsyncMock(return_value=_fake_chat_response())
+    mock_responses = AsyncMock(return_value=_fake_responses_response("from responses"))
+
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI") as mock_client_class:
+        client_instance = mock_client_class.return_value
+        client_instance.chat.completions.create = mock_chat
+        client_instance.responses.create = mock_responses
+
+        provider = OpenAICompatProvider(
+            api_key="sk-test",
+            default_model="deepseek-v4-pro",
+            spec=find_by_name("deepseek"),
+        )
+        result = await provider.chat(
+            messages=[{"role": "user", "content": "hello"}],
+            model="deepseek-v4-pro",
+            reasoning_effort="none",
+        )
+
+    assert result.content == "from responses"
+    mock_responses.assert_awaited_once()
+    mock_chat.assert_not_awaited()
+    call_kwargs = mock_responses.call_args.kwargs
+    assert call_kwargs["model"] == "deepseek-v4-pro"
+    assert call_kwargs["reasoning"] == {"effort": "none"}
+    assert call_kwargs["tools"] == [{"type": "web_search"}]
+    assert "include" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_deepseek_vision_uses_responses_api_with_image_input() -> None:
+    mock_chat = AsyncMock(return_value=_fake_chat_response())
+    mock_responses = AsyncMock(return_value=_fake_responses_response("vision response"))
+    content = [
+        {"type": "text", "text": "describe this image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+    ]
+
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI") as mock_client_class:
+        client_instance = mock_client_class.return_value
+        client_instance.chat.completions.create = mock_chat
+        client_instance.responses.create = mock_responses
+
+        provider = OpenAICompatProvider(
+            api_key="sk-test-key",
+            default_model="deepseek-v4-flash-vision-exp",
+            spec=find_by_name("deepseek"),
+        )
+        result = await provider.chat(
+            messages=[{"role": "user", "content": content}],
+            model="deepseek-v4-flash-vision-exp",
+        )
+
+    assert result.content == "vision response"
+    mock_chat.assert_not_awaited()
+    call_kwargs = mock_responses.call_args.kwargs
+    assert call_kwargs["input"] == [{
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": "describe this image"},
+            {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,AA==",
+                "detail": "auto",
+            },
+        ],
+    }]
 
 
 @pytest.mark.asyncio
@@ -679,6 +752,7 @@ async def test_direct_openai_gpt5_uses_responses_api() -> None:
     assert call_kwargs["max_output_tokens"] == 4096
     assert "input" in call_kwargs
     assert "messages" not in call_kwargs
+    assert call_kwargs["include"] == ["reasoning.encrypted_content"]
 
 
 @pytest.mark.asyncio
@@ -708,6 +782,40 @@ async def test_direct_openai_reasoning_prefers_responses_api() -> None:
     call_kwargs = mock_responses.call_args.kwargs
     assert call_kwargs["reasoning"] == {"effort": "medium"}
     assert call_kwargs["include"] == ["reasoning.encrypted_content"]
+
+
+@pytest.mark.asyncio
+async def test_direct_openai_retries_without_unsupported_server_compaction() -> None:
+    mock_chat = AsyncMock(return_value=_fake_chat_response())
+    mock_responses = AsyncMock(side_effect=[
+        _FakeResponsesError(400, "Unknown parameter: context_management"),
+        _fake_responses_response("compaction fallback"),
+    ])
+    spec = find_by_name("openai")
+
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI") as mock_client_class:
+        client_instance = mock_client_class.return_value
+        client_instance.chat.completions.create = mock_chat
+        client_instance.responses.create = mock_responses
+        provider = OpenAICompatProvider(
+            api_key="sk-test-key",
+            default_model="gpt-5.6",
+            spec=spec,
+        )
+
+        result = await provider.chat_with_context(
+            messages=[{"role": "user", "content": "hello"}],
+            model="gpt-5.6",
+            provider_context=ProviderCallContext(context_window_tokens=200_000),
+        )
+
+    assert result.content == "compaction fallback"
+    assert result.provider_state is not None
+    assert mock_responses.await_count == 2
+    assert "context_management" in mock_responses.call_args_list[0].kwargs
+    assert "context_management" not in mock_responses.call_args_list[1].kwargs
+    assert provider.supports_native_compaction("gpt-5.6") is False
+    mock_chat.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1487,6 +1595,33 @@ def test_deepseek_coerces_list_content_to_string() -> None:
     assert isinstance(kw["messages"][0]["content"], str)
     assert "hello" in kw["messages"][0]["content"]
     assert "world" in kw["messages"][0]["content"]
+
+
+def test_deepseek_vision_preserves_multimodal_content() -> None:
+    """DeepSeek's vision model requires OpenAI-compatible content blocks."""
+    spec = find_by_name("deepseek")
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+        p = OpenAICompatProvider(
+            api_key="k",
+            default_model="deepseek-v4-flash-vision-exp",
+            spec=spec,
+        )
+    content = [
+        {"type": "text", "text": "describe this image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+    ]
+
+    kw = p._build_kwargs(
+        messages=[{"role": "user", "content": content}],
+        tools=None,
+        model="deepseek-v4-flash-vision-exp",
+        max_tokens=1024,
+        temperature=0.7,
+        reasoning_effort=None,
+        tool_choice=None,
+    )
+
+    assert kw["messages"][0]["content"] == content
 
 
 def test_non_deepseek_keeps_list_content() -> None:

@@ -15,11 +15,11 @@ Repository docs follow the current source tree and can be newer than the latest 
 The recommended first-run path is:
 
 1. Install nanobot.
-2. Choose **Quick Start** in `nanobot onboard --wizard`.
-3. Run `nanobot gateway` and open `http://127.0.0.1:8765`.
+2. Let the installer open `nanobot webui` on a fresh local desktop.
+3. Configure a provider and model in **Settings → Models**.
 4. Send `Hello!` before configuring anything else.
 
-Most people do not need to edit JSON for the first run. The wizard handles the initial provider, model, and local WebUI settings. Current source versions also provide `nanobot webui` to start the gateway and open the browser in one step. After the WebUI opens, use **Settings** for models and built-in capabilities, **Settings → Channels** for chat apps, and **Apps** for CLI App or MCP integrations.
+Most people do not need to edit JSON for the first run. The WebUI handles the initial provider, model, and local browser settings. SSH, headless, existing-config, and older-release installs retain `nanobot onboard --wizard` as a terminal fallback. After the WebUI opens, use **Settings** for models and built-in capabilities, **Settings → Channels** for chat apps, and **Apps** for Agent Plugins, CLI Apps, and MCP integrations.
 
 ## Add One Capability
 
@@ -32,6 +32,7 @@ Pick the row that matches what you want to accomplish next:
 | Choose a hosted, OAuth, company, or local model | [Provider Cookbook](./provider-cookbook.md) |
 | Add model fallbacks | [Configure Model Fallback](./guides/configure-model-fallback.md) |
 | Enable web search | [Configure Web Search](./guides/configure-web-search.md) |
+| Manage Agent Plugins, CLI Apps, or MCP integrations | [WebUI Apps](./webui.md#apps) |
 | Add an MCP tool server | [Configure MCP Tools](./guides/configure-mcp-tools.md) |
 | Generate images | [Image Generation](./image-generation.md) |
 | Schedule work or create a local trigger | [Automations](./automations.md) |

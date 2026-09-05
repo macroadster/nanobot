@@ -1,5 +1,7 @@
 """Spawn tool for creating background subagents."""
 
+# pyright: reportIncompatibleMethodOverride=false
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -16,6 +18,7 @@ from nanobot.security.workspace_access import current_workspace_scope
 
 if TYPE_CHECKING:
     from nanobot.agent.subagent import SubagentManager
+    from nanobot.agent.tools.context import ToolContext
 
 
 @tool_parameters(
@@ -49,8 +52,11 @@ class SpawnTool(Tool):
         self._manager = manager
 
     @classmethod
-    def create(cls, ctx: Any) -> Tool:
-        return cls(manager=ctx.subagent_manager)
+    def create(cls, ctx: ToolContext) -> Tool:
+        manager = ctx.subagent_manager
+        if manager is None:
+            raise RuntimeError("SpawnTool requires an initialized subagent manager")
+        return cls(manager=manager)
 
     @property
     def name(self) -> str:
@@ -67,6 +73,11 @@ class SpawnTool(Tool):
             "and use a dedicated subdirectory when helpful."
         )
 
+    @property
+    def concurrency_safe(self) -> bool:
+        """Each call owns its task state; the manager serializes capacity admission."""
+        return True
+
     async def execute(
         self,
         task: str,
@@ -76,14 +87,6 @@ class SpawnTool(Tool):
         **kwargs: Any,
     ) -> str:
         """Spawn a subagent to execute the given task."""
-        running = self._manager.get_running_count()
-        limit = self._manager.max_concurrent_subagents
-        if running >= limit:
-            return (
-                f"Cannot spawn subagent: concurrency limit reached "
-                f"({running}/{limit} running). Wait for a running subagent "
-                f"to complete before spawning a new one."
-            )
         request_ctx = current_request_context()
         if request_ctx is None or request_ctx.runtime is None:
             return ToolResult.error("Error: spawn requires an active model runtime")

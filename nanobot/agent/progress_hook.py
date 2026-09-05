@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
 from loguru import logger
 
@@ -31,7 +31,6 @@ class AgentProgressHook(AgentHook):
         *,
         session_key: str | None = None,
         tool_hint_max_length: int = 40,
-        on_iteration: Callable[[int], None] | None = None,
     ) -> None:
         super().__init__(reraise=True)
         self._on_progress = on_progress
@@ -39,7 +38,6 @@ class AgentProgressHook(AgentHook):
         self._on_stream_end = on_stream_end
         self._session_key = session_key
         self._tool_hint_max_length = tool_hint_max_length
-        self._on_iteration = on_iteration
         self._stream_buf = ""
         self._think_extractor = IncrementalThinkExtractor()
         self._reasoning_open = False
@@ -85,13 +83,17 @@ class AgentProgressHook(AgentHook):
     async def on_stream_end(self, context: AgentHookContext, *, resuming: bool) -> None:
         await self.emit_reasoning_end()
         if self._on_stream_end:
-            await self._on_stream_end(resuming=resuming)
+            kwargs: dict[str, bool] = {"resuming": resuming}
+            if (
+                context.stream_continues_current_message
+                and self._on_progress_accepts(self._on_stream_end, "merge_next")
+            ):
+                kwargs["merge_next"] = True
+            await self._on_stream_end(**kwargs)
         self._stream_buf = ""
         self._think_extractor.reset()
 
     async def before_iteration(self, context: AgentHookContext) -> None:
-        if self._on_iteration:
-            self._on_iteration(context.iteration)
         logger.debug(
             "Starting agent loop iteration {} for session {}",
             context.iteration,
@@ -118,7 +120,7 @@ class AgentProgressHook(AgentHook):
         arguments = event.get("arguments")
         if not isinstance(arguments, dict):
             arguments = {}
-        payload = {
+        payload: dict[str, Any] = {
             "version": 1,
             "phase": phase,
             "call_id": str(call_id),
@@ -163,7 +165,7 @@ class AgentProgressHook(AgentHook):
             tool_events = [build_tool_event_start_payload(tc) for tc in context.tool_calls]
             await invoke_on_progress(
                 self._on_progress,
-                tool_hint,
+                cast(str, tool_hint),
                 tool_hint=True,
                 tool_events=tool_events,
             )
@@ -204,12 +206,14 @@ class AgentProgressHook(AgentHook):
                     tool_hint=False,
                     tool_events=tool_events,
                 )
-        u = context.usage or {}
+        u = context.usage
         logger.debug(
-            "LLM usage: prompt={} completion={} cached={}",
-            u.get("prompt_tokens", 0),
-            u.get("completion_tokens", 0),
-            u.get("cached_tokens", 0),
+            "LLM usage: input={} output={} cache_read={} cache_write={} source={}",
+            u.input_tokens if u else 0,
+            u.output_tokens if u else 0,
+            u.cache_read_tokens if u else None,
+            u.cache_write_tokens if u else None,
+            u.source if u else "missing",
         )
 
     def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
