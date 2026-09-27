@@ -541,9 +541,16 @@ class DiscordChannel(BaseChannel):
         if client is None or not client.is_ready():
             raise RuntimeError("Discord client is not ready")
 
-        is_progress = isinstance(msg.event, ProgressEvent)
+        event = msg.event
+        is_progress = isinstance(event, ProgressEvent)
+        # Discord has no low-emphasis trace row. A tool-call hint keeps the
+        # bot in the "typing" state instead of posting read_file("…") into chat.
+        is_tool_hint = isinstance(event, ProgressEvent) and event.tool_hint
 
         try:
+            if is_tool_hint:
+                await self._ensure_typing(msg.chat_id)
+                return
             await client.send_outbound(msg)
         except Exception:
             self.logger.exception("Error sending message")
@@ -881,6 +888,22 @@ class DiscordChannel(BaseChannel):
         )
         author = getattr(referenced_message, "author", None)
         return str(getattr(author, "id", "")) == bot_user_id
+
+    async def _ensure_typing(self, chat_id: str) -> None:
+        """Show the bot as typing without posting a message.
+
+        Used for tool-call hints. An in-flight indicator is left alone so a
+        hint does not cancel and restart the typing loop.
+        """
+        key = self._channel_key(chat_id)
+        task = self._typing_tasks.get(key)
+        if task is not None and not task.done():
+            return
+        channel = await self._resolve_channel(chat_id)
+        if channel is None:
+            self.logger.debug("tool hint typing skipped; channel {} unavailable", chat_id)
+            return
+        await self._start_typing(channel)
 
     async def _start_typing(self, channel: Messageable) -> None:
         """Start periodic typing indicator for a channel."""

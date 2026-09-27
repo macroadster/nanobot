@@ -1523,6 +1523,50 @@ async def test_send_stops_typing_after_send() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_hint_shows_typing_without_posting_to_chat() -> None:
+    # Tool-call hints must not appear as Discord messages. They only keep
+    # the bot in the typing state until a real reply is sent.
+    channel = DiscordChannel(DiscordConfig(enabled=True, allow_from=["*"]), MessageBus())
+    client = _FakeDiscordClient(channel, intents=None)
+    target = _FakeChannel(channel_id=123)
+    client.channels[123] = target
+    channel._client = client
+    channel._running = True
+
+    await channel.send(
+        OutboundMessage(
+            channel="discord",
+            chat_id="123",
+            content='read_file("config.json")',
+            event=ProgressEvent(content='read_file("config.json")', tool_hint=True),
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert target.sent_payloads == []
+    assert "123" in channel._typing_tasks
+    assert target.trigger_typing_calls >= 1
+
+    typing_task = channel._typing_tasks["123"]
+    await channel.send(
+        OutboundMessage(
+            channel="discord",
+            chat_id="123",
+            content='exec("pytest")',
+            event=ProgressEvent(content='exec("pytest")', tool_hint=True),
+        )
+    )
+
+    assert target.sent_payloads == []
+    assert channel._typing_tasks["123"] is typing_task
+
+    await channel.send(OutboundMessage(channel="discord", chat_id="123", content="done"))
+
+    assert target.sent_payloads == [{"content": "done"}]
+    assert channel._typing_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_start_typing_uses_typing_context_when_trigger_typing_missing() -> None:
     channel = DiscordChannel(DiscordConfig(enabled=True, allow_from=["*"]), MessageBus())
     channel._running = True
