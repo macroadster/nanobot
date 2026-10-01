@@ -140,6 +140,7 @@ const PROVIDER_BRAND_ALIASES: Record<string, string> = {
   openai_codex: "openai",
   opencode_zen: "opencode",
   opencode_go: "opencode",
+  grok: "xai",
   "xai-grok": "xai",
   xai_grok: "xai",
   xiaomi: "xiaomi_mimo",

@@ -2787,6 +2787,32 @@ describe("useNanobotStream", () => {
     ]);
   });
 
+  it("attaches a Grok voice reply to the streamed answer", () => {
+    const fake = fakeClient();
+    const { result } = renderHook(() => useNanobotStream("chat-voice", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    act(() => {
+      fake.emit("chat-voice", {
+        event: "delta",
+        chat_id: "chat-voice",
+        text: "Hello",
+      });
+      fake.emit("chat-voice", {
+        event: "stream_end",
+        chat_id: "chat-voice",
+        text: "Hello",
+        media_urls: [{ url: "/api/media/sig/voice", name: "reply.mp3" }],
+      });
+    });
+
+    expect(result.current.messages[0].content).toBe("Hello");
+    expect(result.current.messages[0].media).toEqual([
+      { kind: "audio", url: "/api/media/sig/voice", name: "reply.mp3" },
+    ]);
+  });
+
   it.each([
     { name: "index.html", kind: "file", url: "/api/media/sig/html" },
     { name: "growth.svg", kind: "image", url: "/api/media/sig/svg" },

@@ -43,6 +43,17 @@ type PendingStreamEvent =
   | { kind: "delta"; text: string; turn: UIMessageTurnFields; source?: UIMessage["source"]; responseSources?: UIMessage["responseSources"] }
   | { kind: "reasoning"; text: string; turn: UIMessageTurnFields };
 
+function playVoiceReply(media: UIMediaAttachment[] | undefined): void {
+  const clip = media?.find((item) => item.kind === "audio" && item.url);
+  if (!clip?.url || typeof Audio === "undefined") return;
+  try {
+    const audio = new Audio(clip.url);
+    void audio.play().catch(() => undefined);
+  } catch {
+    // The player on the message remains usable when autoplay is blocked.
+  }
+}
+
 const BACKGROUND_STREAM_FLUSH_INTERVAL_MS = 1_000;
 // Markdown and layout work must leave room for input between visible updates.
 const VISIBLE_STREAM_FLUSH_INTERVAL_MS = 50;
@@ -75,6 +86,8 @@ export interface SendOptions {
   finalizeActiveTurn?: boolean;
   /** Append guidance to the running turn without detaching its active answer segment. */
   continueActiveTurn?: boolean;
+  /** This send came from microphone transcription and should be spoken back. */
+  voiceReply?: boolean;
 }
 
 export interface SubmittedTurn {
@@ -373,6 +386,7 @@ export function useNanobotStream(
     turn?: UIMessageTurnFields;
     source?: UIMessage["source"];
     responseSources?: UIMessage["responseSources"];
+    media?: UIMediaAttachment[];
   }) => {
     lastStreamFlushRef.current = 0;
     if (streamFrameRef.current !== null) {
@@ -388,8 +402,15 @@ export function useNanobotStream(
     const turn = options?.turn ?? {};
     const source = options?.source;
     const responseSources = options?.responseSources;
-    if (events.length === 0 && finalAnswerText === undefined && source === undefined && responseSources === undefined
-      && !options?.mergeReasoning) {
+    const media = options?.media;
+    if (
+      events.length === 0
+      && finalAnswerText === undefined
+      && source === undefined
+      && responseSources === undefined
+      && !media?.length
+      && !options?.mergeReasoning
+    ) {
       if (options?.closeAnswerSegment) closeActiveAssistantStream();
       return;
     }
@@ -401,6 +422,7 @@ export function useNanobotStream(
         finalAnswerText !== undefined
         || source !== undefined
         || responseSources !== undefined
+        || Boolean(media?.length)
         || options?.mergeReasoning
         || options?.closeAnswerSegment
       ) {
@@ -410,6 +432,13 @@ export function useNanobotStream(
           ...(finalAnswerText !== undefined ? { text: finalAnswerText } : {}),
           ...(source ? { source } : {}),
           ...(responseSources !== undefined ? { response_sources: responseSources } : {}),
+          ...(media?.length
+            ? {
+                media_urls: media.flatMap((item) => (
+                  item.url ? [{ url: item.url, name: item.name, kind: item.kind }] : []
+                )),
+              }
+            : {}),
           ...(options?.mergeReasoning ? { resuming: true, merge_next: true } : {}),
           turn_id: turn.turnId,
           turn_phase: turn.turnPhase,
@@ -701,6 +730,9 @@ export function useNanobotStream(
       if (ev.event === "stream_end") {
         const turn = turnFieldsFromEvent(ev, "answer");
         const mergeNext = ev.resuming === true && ev.merge_next === true;
+        const media = ev.media_urls?.length
+          ? ev.media_urls.map((item) => toMediaAttachment(item))
+          : undefined;
         flushPendingStreamEvents({
           closeAnswerSegment: !mergeNext,
           mergeReasoning: mergeNext,
@@ -708,7 +740,9 @@ export function useNanobotStream(
           turn,
           source: ev.source,
           responseSources: ev.response_sources,
+          ...(media ? { media } : {}),
         });
+        if (!mergeNext) playVoiceReply(media);
         if (projectionRef.current.suppressUntilTurnEnd) return;
         if (ev.resuming) {
           setIsStreaming(true);
@@ -881,6 +915,10 @@ export function useNanobotStream(
 
       if (ev.event === "message") {
         applyProjectionEvent(ev, { sideChannel: sideChannelEvent });
+        const media = ev.media_urls?.length
+          ? ev.media_urls.map((item) => toMediaAttachment(item))
+          : ev.media?.map((url) => toMediaAttachment({ url }));
+        if (media?.some((item) => item.kind === "audio")) playVoiceReply(media);
         if (sideChannelEvent && typeof ev.turn_id === "string") {
           sideChannelTurnIdsRef.current.delete(ev.turn_id);
         }

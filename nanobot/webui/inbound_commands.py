@@ -15,6 +15,7 @@ from typing import Any, Protocol, cast
 from loguru import logger
 from websockets.asyncio.server import ServerConnection
 
+from nanobot.audio.speech import VOICE_REPLY_META
 from nanobot.bus.events import INBOUND_META_USER_SHELL
 from nanobot.command.builtin import USER_SHELL_COMMAND, builtin_command_starts_agent_turn
 from nanobot.runtime_context import (
@@ -617,6 +618,8 @@ class WebUICommandRouter:
             metadata["webui"] = True
             metadata.update(self._transcripts.client_turn_metadata(envelope.get("turn_id")))
         trusted_webui = metadata.get("webui") is True and connection in self._webui_connections
+        if trusted_webui and envelope.get("voice_reply") is True:
+            metadata[VOICE_REPLY_META] = True
         is_user_shell = (
             trusted_webui
             and envelope.get("user_shell") is True

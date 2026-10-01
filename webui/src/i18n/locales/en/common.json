@@ -800,6 +800,8 @@
       "transcriptionProviderStatus": "Provider status",
       "transcriptionModel": "Model",
       "transcriptionLanguage": "Language",
+      "speakReplies": "Speak replies",
+      "voiceId": "Grok voice",
       "voiceLimits": "Limits"
     },
     "help": {
@@ -844,7 +846,9 @@
       "transcriptionProvider": "Uses the matching provider credentials from Providers.",
       "transcriptionProviderStatus": "API keys stay under providers, not in transcription settings.",
       "transcriptionModel": "Keep the default model unless your provider requires a specific model ID.",
-      "transcriptionLanguage": "Optional language code, such as en for English, zh for Chinese, ja for Japanese, or ko for Korean."
+      "transcriptionLanguage": "Optional language code, such as en for English, zh for Chinese, ja for Japanese, or ko for Korean.",
+      "speakReplies": "Discord voice messages and WebUI voice turns are answered aloud with Grok Voice. Text messages stay text.",
+      "voiceId": "Built-in voice id such as eve, ara, rex, sal, or leo. A custom voice id works too."
     },
     "timezone": {
       "select": "Select timezone",
@@ -1679,7 +1683,9 @@
     "voice": {
       "selectProvider": "Select provider",
       "configureProvider": "Configure provider",
-      "languageAuto": "Auto"
+      "languageAuto": "Auto",
+      "grokReady": "Grok ready",
+      "grokMissing": "Grok key needed"
     }
   },
   "chat": {
@@ -2271,6 +2277,7 @@
     "cliRunRunning": "Using",
     "cliRunRan": "Used",
     "cliRunFailed": "Failed",
+    "audioAttachment": "Voice reply",
     "imageAttachment": "Image attachment",
     "videoAttachment": "Video attachment",
     "fileAttachment": "File attachment",

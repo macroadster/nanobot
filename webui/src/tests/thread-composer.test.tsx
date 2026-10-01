@@ -774,7 +774,7 @@ describe("ThreadComposer", () => {
     expect(onPresetChange).toHaveBeenCalledWith("dflash");
   });
 
-  it("transcribes voice input into the composer without sending", async () => {
+  it("transcribes voice input into the composer and marks the send as a voice reply", async () => {
     mockVoiceRecorder();
     const onSend = vi.fn();
     const onTranscribeAudio = vi.fn(async () => "hello voice");
@@ -797,6 +797,9 @@ describe("ThreadComposer", () => {
     ));
     await waitFor(() => expect(screen.getByLabelText("Message input")).toHaveValue("hello voice"));
     expect(onSend).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenCalledWith("hello voice", undefined, { voiceReply: true });
   });
 
   it("explains the HTTPS requirement for voice input on an insecure origin", async () => {

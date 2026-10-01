@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import Field
 
+from nanobot.audio.speech import VOICE_REPLY_META, synthesize_voice_reply
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.outbound_events import ContextCompactionEvent, ProgressEvent
 from nanobot.bus.queue import MessageBus
@@ -37,6 +38,16 @@ if DISCORD_AVAILABLE:
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20MB
 MAX_MESSAGE_LEN = 2000  # Discord message character limit
 TYPING_INTERVAL_S = 8
+_AUDIO_SUFFIXES = frozenset({
+    ".aac",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".webm",
+})
 
 
 @dataclass
@@ -566,6 +577,8 @@ class DiscordChannel(BaseChannel):
                 await self._ensure_typing(msg.chat_id)
                 return
             await client.send_outbound(msg)
+            if msg.event is None:
+                await self._send_voice_file(msg.chat_id, msg.content or "", msg.metadata)
         except Exception:
             self.logger.exception("Error sending message")
             raise
@@ -601,7 +614,10 @@ class DiscordChannel(BaseChannel):
                 return
             if stream_id is not None and buf.stream_id is not None and buf.stream_id != stream_id:
                 return
+            spoken = buf.text
             await self._finalize_stream(chat_id, buf, buf.message)
+            if not resuming:
+                await self._send_voice_file(chat_id, spoken, metadata)
             return
 
         buf = self._stream_bufs.get(chat_id)
@@ -685,9 +701,13 @@ class DiscordChannel(BaseChannel):
         if not self._should_accept_inbound(message, sender_id, content):
             return
 
-        media_paths, attachment_markers = await self._download_attachments(message.attachments)
+        media_paths, attachment_markers, heard_voice = await self._download_attachments(
+            message.attachments,
+        )
         full_content = self._compose_inbound_content(content, attachment_markers)
-        metadata = self._build_inbound_metadata(message)
+        metadata: dict[str, Any] = dict(self._build_inbound_metadata(message))
+        if heard_voice:
+            metadata[VOICE_REPLY_META] = True
         parent_channel_id = self._channel_parent_key(message.channel)
         session_key = None
         if parent_channel_id is not None:
@@ -811,10 +831,11 @@ class DiscordChannel(BaseChannel):
     async def _download_attachments(
         self,
         attachments: list[discord.Attachment],
-    ) -> tuple[list[str], list[str]]:
-        """Download supported attachments and return paths + display markers."""
+    ) -> tuple[list[str], list[str], bool]:
+        """Download attachments. Audio is transcribed and can request a spoken reply."""
         media_paths: list[str] = []
         markers: list[str] = []
+        heard_voice = False
         media_dir = get_media_dir("discord")
 
         for attachment in attachments:
@@ -827,13 +848,55 @@ class DiscordChannel(BaseChannel):
                 safe_name = safe_filename(filename)
                 file_path = media_dir / f"{attachment.id}_{safe_name}"
                 await attachment.save(file_path)
-                media_paths.append(str(file_path))
-                markers.append(f"[attachment: {file_path.name}]")
             except Exception as e:
                 self.logger.warning("Failed to download attachment: {}", e)
                 markers.append(f"[attachment: {filename} - download failed]")
+                continue
+            media_paths.append(str(file_path))
+            if self._is_audio_attachment(attachment):
+                transcription = (await self.transcribe_audio(file_path)).strip()
+                if transcription:
+                    self.logger.info("Transcribed audio: {}...", transcription[:50])
+                    markers.append(f"[transcription: {transcription}]")
+                    heard_voice = True
+                    continue
+            markers.append(f"[attachment: {file_path.name}]")
 
-        return media_paths, markers
+        return media_paths, markers, heard_voice
+
+    @staticmethod
+    def _is_audio_attachment(attachment: object) -> bool:
+        """True for Discord voice messages and other audio files."""
+        content_type = getattr(attachment, "content_type", None)
+        if isinstance(content_type, str) and content_type.lower().startswith("audio/"):
+            return True
+        filename = getattr(attachment, "filename", None)
+        suffix = Path(str(filename)).suffix.lower() if filename else ""
+        return suffix in _AUDIO_SUFFIXES
+
+    async def _send_voice_file(
+        self,
+        chat_id: str,
+        text: str,
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        """Attach a Grok Voice rendering after the text reply is already visible."""
+        try:
+            path = await synthesize_voice_reply(text, metadata)
+        except Exception:
+            self.logger.exception("Grok voice synthesis failed")
+            return
+        if path is None:
+            return
+        target = await self._resolve_channel(chat_id)
+        if target is None:
+            self.logger.warning("voice reply target {} unavailable", chat_id)
+            return
+        try:
+            await target.send(file=discord.File(path))
+            self.logger.info("voice reply sent: {}", path.name)
+        except Exception:
+            self.logger.exception("Failed to send voice reply")
 
     @staticmethod
     def _compose_inbound_content(content: str, attachment_markers: list[str]) -> str:

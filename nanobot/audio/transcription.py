@@ -99,7 +99,39 @@ def _resolve_transcription_api_key(
             return env_key
 
     env_key = spec.env_key if spec else ""
-    return os.environ.get(env_key, "") if env_key else ""
+    if env_key:
+        env_value = os.environ.get(env_key, "")
+        if env_value:
+            return env_value
+    if provider == "grok":
+        return _grok_oidc_api_key()
+    return ""
+
+
+def _grok_oidc_api_key() -> str:
+    """Return the Grok CLI access token when no explicit xAI API key is set."""
+    try:
+        from nanobot.providers.grok_provider import load_grok_oidc_token
+    except Exception:
+        logger.exception("Failed to load Grok OIDC credentials")
+        return ""
+    entry = load_grok_oidc_token()
+    token = entry.get("key") if isinstance(entry, dict) else None
+    return token.strip() if isinstance(token, str) else ""
+
+
+def transcription_provider_api_key(config: Config, provider: str) -> str:
+    """Resolve the API key a transcription provider would use right now."""
+    return _resolve_transcription_api_key(provider, _provider_config(config, provider))
+
+
+def transcription_provider_api_base(config: Config, provider: str) -> str:
+    """Resolve the API base a transcription provider would use right now."""
+    return _resolve_transcription_api_base(provider, _provider_config(config, provider))
+
+
+def transcription_provider_configured(config: Config, provider: str) -> bool:
+    return bool(transcription_provider_api_key(config, provider))
 
 
 def _resolve_transcription_api_base(

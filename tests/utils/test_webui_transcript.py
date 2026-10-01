@@ -1404,6 +1404,24 @@ def test_backfill_skips_internal_subagent_results(tmp_path, monkeypatch) -> None
 
 
 
+def test_stream_end_projection_includes_voice_audio() -> None:
+    event = transcript_module._client_projection_event(  # pyright: ignore[reportPrivateUsage]
+        {
+            "event": "stream_end",
+            "chat_id": "t-voice",
+            "text": "Hello",
+            "media_urls": [{"url": "/api/media/sig/payload", "name": "reply.mp3"}],
+        },
+        augment_user_media=None,
+        augment_assistant_media=None,
+        augment_assistant_text=None,
+    )
+
+    assert event is not None
+    assert event["text"] == "Hello"
+    assert event["media_urls"] == [
+        {"kind": "audio", "url": "/api/media/sig/payload", "name": "reply.mp3"},
+    ]
 
 
 

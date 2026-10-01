@@ -248,7 +248,7 @@ Tracing covers the providers that go through nanobot's OpenAI-compatible client 
 ## Providers
 
 > [!TIP]
-> - **Voice transcription**: Voice messages and WebUI microphone input use the shared top-level `transcription` settings. The default `transcription.provider` value is `"groq"`; set it to `"openai"` for OpenAI Whisper, `"openrouter"` for OpenRouter speech-to-text models, `"xiaomi_mimo"` for Xiaomi MiMo ASR, or `"assemblyai"` for AssemblyAI. API keys still live in the matching `providers.<provider>` config.
+> - **Voice transcription**: Voice messages and WebUI microphone input use the shared top-level `transcription` settings. The default `transcription.provider` value is `"groq"`; set it to `"grok"` for Grok Voice speech-to-text, `"openai"` for OpenAI Whisper, `"openrouter"` for OpenRouter speech-to-text models, `"xiaomi_mimo"` for Xiaomi MiMo ASR, or `"assemblyai"` for AssemblyAI. API keys still live in the matching `providers.<provider>` config. Spoken replies use Grok Voice whenever `voice.speakReplies` is on and Grok credentials are available.
 > - **MiniMax Coding Plan**: Exclusive discount links for the nanobot community: [Overseas](https://platform.minimax.io/subscribe/coding-plan?code=9txpdXw04g&source=link) · [Mainland China](https://platform.minimaxi.com/subscribe/token-plan?code=GILTJpMTqZ&source=link)
 > - **MiniMax (Mainland China)**: If your API key is from MiniMax's mainland China platform (minimaxi.com), set `"apiBase": "https://api.minimaxi.com/v1"` in your minimax provider config.
 > - **MiniMax thinking mode**: `providers.minimaxAnthropic` is the config block for `reasoningEffort` / thinking mode. MiniMax exposes that capability through its Anthropic-compatible endpoint, so nanobot keeps it as a separate provider instead of guessing MiniMax-specific thinking parameters on the generic OpenAI-compatible `minimax` endpoint. It uses the same `MINIMAX_API_KEY`. Default Anthropic-compatible base URL: `https://api.minimax.io/anthropic`; for mainland China use `https://api.minimaxi.com/anthropic`.
@@ -311,7 +311,7 @@ Tracing covers the providers that go through nanobot's OpenAI-compatible client 
 | `openai_codex` | LLM (Codex, OAuth) | `nanobot provider login openai-codex --set-main` |
 | `xai_grok` | LLM (Grok, OAuth) | `nanobot provider login xai-grok --set-main` |
 | `github_copilot` | LLM (GitHub Copilot, OAuth) | `nanobot provider login github-copilot` |
-| `grok` | LLM (Grok / xAI; API key or OIDC via `grok login`) | [console.x.ai](https://console.x.ai) · `nanobot provider login grok` |
+| `grok` | LLM (Grok / xAI; API key or OIDC via `grok login`) + Grok Voice transcription and spoken replies | [console.x.ai](https://console.x.ai) · `nanobot provider login grok` |
 | `qianfan` | LLM (Baidu Qianfan) | [cloud.baidu.com](https://cloud.baidu.com/doc/qianfan/s/Hmh4suq26) |
 
 <details>
@@ -956,7 +956,9 @@ nanobot provider login grok
 ```
 
 Default API base is `https://api.x.ai/v1`. OIDC JWTs from `grok login` include
-`api:access` and work on that endpoint.
+`api:access` and work on that endpoint. Grok Voice speech-to-text and
+text-to-speech use the same credentials. Voice calls stay on `api.x.ai` even
+when chat `apiBase` points at the CLI chat proxy.
 
 ```json
 {
@@ -1663,8 +1665,8 @@ Configure transcription under the top-level `transcription` section:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `true` | Enables audio transcription for both chat-channel voice messages and WebUI microphone input. |
-| `provider` | `"groq"` | Transcription backend: `"groq"`, `"openai"`, `"openrouter"`, `"xiaomi_mimo"`, `"stepfun"`, or `"assemblyai"`. |
-| `model` | provider default | Optional transcription model override. Defaults to `whisper-large-v3` for Groq, `whisper-1` for OpenAI, `openai/whisper-1` for OpenRouter, `mimo-v2.5-asr` for Xiaomi MiMo ASR, `stepaudio-2.5-asr` for StepFun ASR, and `universal-3-pro,universal-2` for AssemblyAI. OpenRouter accepts only speech-to-text models on its transcription endpoint, such as `nvidia/parakeet-tdt-0.6b-v3`, `openai/whisper-1`, or `openai/gpt-4o-transcribe`; chat LLMs are rejected there. AssemblyAI accepts a comma-separated model fallback list. |
+| `provider` | `"groq"` | Transcription backend: `"groq"`, `"grok"`, `"openai"`, `"openrouter"`, `"xiaomi_mimo"`, `"stepfun"`, or `"assemblyai"`. |
+| `model` | provider default | Optional transcription model override. Defaults to `whisper-large-v3` for Groq, `grok-voice-transcribe-2.0` for Grok Voice, `whisper-1` for OpenAI, `openai/whisper-1` for OpenRouter, `mimo-v2.5-asr` for Xiaomi MiMo ASR, `stepaudio-2.5-asr` for StepFun ASR, and `universal-3-pro,universal-2` for AssemblyAI. OpenRouter accepts only speech-to-text models on its transcription endpoint, such as `nvidia/parakeet-tdt-0.6b-v3`, `openai/whisper-1`, or `openai/gpt-4o-transcribe`; chat LLMs are rejected there. AssemblyAI accepts a comma-separated model fallback list. |
 | `language` | `null` | Optional ISO-639 language hint, e.g. `"en"`, `"zh"`, `"ko"`, or `"ja"`. |
 | `maxDurationSec` | `120` | Maximum WebUI recording duration. |
 | `maxUploadMb` | `25` | Maximum WebUI audio upload size. |
@@ -1694,9 +1696,43 @@ Transcription credentials are intentionally not stored in `transcription`. Put t
 }
 ```
 
-Selecting a transcription provider does not configure credentials by itself. For example, the effective provider may default to Groq for compatibility, but transcription is only usable when `providers.groq.apiKey` or the matching environment-backed config is available. The Settings UI writes only the top-level `transcription` fields.
+Selecting a transcription provider does not configure credentials by itself. For example, the effective provider may default to Groq for compatibility, but transcription is only usable when `providers.groq.apiKey` or the matching environment-backed config is available. The Settings UI writes the top-level `transcription` fields, plus `voice.speakReplies` and `voice.voiceId`.
 
 If you are adding a new transcription provider, see [`development.md`](./development.md#adding-a-transcription-provider).
+
+## Grok Voice replies
+
+Discord voice messages and WebUI microphone turns can be answered out loud. The text reply is unchanged. Grok Voice then renders it with `POST https://api.x.ai/v1/tts` and delivers the audio as a Discord attachment or a WebUI player.
+
+```json
+{
+  "providers": {
+    "grok": {
+      "apiKey": "${XAI_API_KEY}"
+    }
+  },
+  "transcription": {
+    "provider": "grok"
+  },
+  "voice": {
+    "enabled": true,
+    "speakReplies": true,
+    "voiceId": "eve"
+  }
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enabled` | `true` | Allows spoken replies. |
+| `speakReplies` | `true` | Speak the answer when the turn started as speech. Typed messages stay text. |
+| `voiceId` | `"eve"` | Grok voice id. Built-ins include `eve`, `ara`, `rex`, `sal`, and `leo`. Custom voice ids from the xAI console work too. |
+| `language` | transcription language, or `auto` | BCP-47 hint passed to text-to-speech. |
+| `maxChars` | `4000` | Maximum characters read aloud from one reply. Code fences are skipped. |
+
+Discord treats audio attachments, including native voice messages, as speech. A successful transcript is what the agent sees, and the same turn gets a spoken reply when Grok credentials are configured. In the WebUI, dictate into the composer and send that text; the reply includes an audio player and starts playback when the browser allows it.
+
+Credentials are `providers.grok.apiKey`, `XAI_API_KEY`, or a `grok login` token in `~/.grok/auth.json`. Set `voice.speakReplies` to `false` to keep transcripts without spoken answers.
 
 ## Channel Settings
 

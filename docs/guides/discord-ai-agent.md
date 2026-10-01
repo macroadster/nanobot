@@ -86,6 +86,10 @@ After approval, mention it in an allowed server channel:
 @your-bot Hello from Discord
 ```
 
+## Voice messages
+
+With Grok credentials configured, a Discord voice message is transcribed and the bot answers in text and audio. Choose Grok Voice for transcription with `transcription.provider: "grok"`, and leave `voice.speakReplies` on to hear the reply. Typed messages stay text. See [Grok Voice replies](../configuration.md#grok-voice-replies).
+
 ## Security notes
 
 - Keep `groupPolicy` as `mention` for first deployment.

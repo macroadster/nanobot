@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypedDict
 
 from nanobot.agent.tools.web import SEARCH_PROVIDER_OPTIONS
 from nanobot.api.runtime import ApiRuntime, ApiStartOptions
-from nanobot.audio.transcription import resolve_transcription_config
+from nanobot.audio.speech import resolve_voice_config
+from nanobot.audio.transcription import (
+    resolve_transcription_config,
+    transcription_provider_configured,
+)
 from nanobot.audio.transcription_registry import (
     resolve_transcription_provider,
     transcription_provider_names,
@@ -134,7 +138,7 @@ def _transcription_provider_rows(config: Config) -> list[dict[str, Any]]:
             {
                 "name": name,
                 "label": spec.label if spec is not None else name,
-                "configured": bool(getattr(provider_config, "api_key", None)),
+                "configured": transcription_provider_configured(config, name),
                 "api_key_hint": mask_secret_hint(getattr(provider_config, "api_key", None)),
                 "api_base": getattr(provider_config, "api_base", None),
                 "default_api_base": (
@@ -153,6 +157,7 @@ def capability_settings_payload(
     search_config = config.tools.web.search
     image_config = config.tools.image_generation
     transcription = resolve_transcription_config(config)
+    voice = resolve_voice_config(config)
     search_provider = (
         search_config.provider
         if search_config.provider in _WEB_SEARCH_PROVIDER_BY_NAME
@@ -225,6 +230,9 @@ def capability_settings_payload(
             "max_duration_sec": transcription.max_duration_sec,
             "max_upload_mb": transcription.max_upload_mb,
             "providers": _transcription_provider_rows(config),
+            "speak_replies": voice.speak_replies,
+            "voice_id": voice.voice_id,
+            "voice_configured": voice.configured,
         },
     }
 
@@ -561,6 +569,25 @@ def update_transcription_settings(config: Config, query: QueryParams) -> bool:
             raise WebUISettingsError("max_upload_mb must be between 1 and 100")
         if transcription.max_upload_mb != parsed_upload:
             transcription.max_upload_mb = parsed_upload
+            changed = True
+
+    voice = config.voice
+    speak_replies = query_first_alias(query, "speak_replies", "speakReplies")
+    if speak_replies is not None:
+        parsed_speak = parse_bool(speak_replies, "speak_replies")
+        if voice.speak_replies != parsed_speak:
+            voice.speak_replies = parsed_speak
+            changed = True
+
+    voice_id = query_first_alias(query, "voice_id", "voiceId")
+    if voice_id is not None:
+        voice_id = voice_id.strip() or "eve"
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", voice_id):
+            raise WebUISettingsError(
+                "voice_id must be 1-64 letters, numbers, underscores, or hyphens"
+            )
+        if voice.voice_id != voice_id:
+            voice.voice_id = voice_id
             changed = True
     return changed
 

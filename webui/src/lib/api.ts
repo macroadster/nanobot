@@ -1293,6 +1293,8 @@ export async function updateTranscriptionSettings(
       language: update.language,
       max_duration_sec: update.maxDurationSec,
       max_upload_mb: update.maxUploadMb,
+      speak_replies: update.speakReplies,
+      voice_id: update.voiceId,
     },
   );
 }

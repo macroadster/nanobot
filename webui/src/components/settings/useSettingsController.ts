@@ -323,7 +323,9 @@ export function useSettingsController({
       transcriptionForm.model !== transcription.model ||
       transcriptionForm.language !== (transcription.language ?? "") ||
       transcriptionForm.maxDurationSec !== transcription.max_duration_sec ||
-      transcriptionForm.maxUploadMb !== transcription.max_upload_mb
+      transcriptionForm.maxUploadMb !== transcription.max_upload_mb ||
+      transcriptionForm.speakReplies !== (transcription.speak_replies ?? true) ||
+      transcriptionForm.voiceId !== (transcription.voice_id || "eve")
     );
   }, [settings, transcriptionForm]);
 

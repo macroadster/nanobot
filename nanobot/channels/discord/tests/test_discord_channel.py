@@ -884,6 +884,100 @@ async def test_on_message_downloads_attachments(tmp_path, monkeypatch) -> None:
     assert len(handled) == 1
     assert handled[0]["media"] == [str(tmp_path / "12_photo.png")]
     assert "[attachment:" in handled[0]["content"]
+    assert "grok_voice_reply" not in handled[0]["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_on_message_transcribes_voice_messages(tmp_path, monkeypatch) -> None:
+    channel = DiscordChannel(DiscordConfig(enabled=True, allow_from=["*"]), MessageBus())
+    handled: list[dict] = []
+
+    async def capture_handle(**kwargs) -> None:
+        handled.append(kwargs)
+
+    async def transcribe(path: str | Path) -> str:
+        assert str(path).endswith("9_voice-message.ogg")
+        return "hello from voice"
+
+    channel._handle_message = capture_handle  # type: ignore[method-assign]
+    channel.transcribe_audio = transcribe  # type: ignore[method-assign]
+    monkeypatch.setattr("nanobot.channels.discord.runtime.get_media_dir", lambda _name: tmp_path)
+    attachment = _FakeAttachment(9, "voice-message.ogg")
+    attachment.content_type = "audio/ogg"  # type: ignore[attr-defined]
+
+    await channel._on_message(_make_message(attachments=[attachment], content=""))
+
+    assert handled[0]["content"] == "[transcription: hello from voice]"
+    assert handled[0]["metadata"]["grok_voice_reply"] is True
+    assert handled[0]["media"] == [str(tmp_path / "9_voice-message.ogg")]
+
+
+@pytest.mark.asyncio
+async def test_send_attaches_voice_reply_after_text(tmp_path, monkeypatch) -> None:
+    channel = DiscordChannel(DiscordConfig(enabled=True, allow_from=["*"]), MessageBus())
+    client = _FakeDiscordClient(channel, intents=None)
+    target = _FakeChannel(channel_id=123)
+    client.channels[123] = target
+    channel._client = client
+    channel._running = True
+    audio = tmp_path / "reply.mp3"
+    audio.write_bytes(b"ID3reply")
+
+    async def fake_synthesize(text: str, metadata: dict) -> Path:
+        assert text == "spoken answer"
+        assert metadata["grok_voice_reply"] is True
+        return audio
+
+    monkeypatch.setattr(
+        "nanobot.channels.discord.runtime.synthesize_voice_reply",
+        fake_synthesize,
+    )
+
+    await channel.send(
+        OutboundMessage(
+            channel="discord",
+            chat_id="123",
+            content="spoken answer",
+            metadata={"grok_voice_reply": True},
+        )
+    )
+
+    assert target.sent_payloads[0] == {"content": "spoken answer"}
+    assert target.sent_payloads[1]["file_name"] == "reply.mp3"
+
+
+@pytest.mark.asyncio
+async def test_send_delta_speaks_only_the_final_segment(tmp_path, monkeypatch) -> None:
+    owner = DiscordChannel(DiscordConfig(enabled=True, allow_from=["*"]), MessageBus())
+    client = _FakeDiscordClient(owner, intents=None)
+    owner._client = client
+    owner._running = True
+    target = _FakeChannel(channel_id=123)
+    client.channels[123] = target
+    audio = tmp_path / "reply.mp3"
+    audio.write_bytes(b"ID3reply")
+    calls: list[str] = []
+
+    async def fake_synthesize(text: str, _metadata: dict) -> Path:
+        calls.append(text)
+        return audio
+
+    monkeypatch.setattr(
+        "nanobot.channels.discord.runtime.synthesize_voice_reply",
+        fake_synthesize,
+    )
+    times = iter([1.0, 3.0])
+    monkeypatch.setattr("nanobot.channels.discord.runtime.time.monotonic", lambda: next(times, 3.0))
+    metadata = {"grok_voice_reply": True}
+
+    await owner.send_delta("123", "partial", metadata=metadata, stream_id="s1", stream_end=True, resuming=True)
+    assert calls == []
+
+    await owner.send_delta("123", "hello", metadata=metadata, stream_id="s1")
+    await owner.send_delta("123", "", metadata=metadata, stream_id="s1", stream_end=True)
+
+    assert calls == ["hello"]
+    assert target.sent_payloads[-1]["file_name"] == "reply.mp3"
 
 
 @pytest.mark.asyncio

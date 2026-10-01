@@ -36,6 +36,20 @@ export function AttachmentTile({ attachment, className, inline = false, variant 
     );
   }
 
+  if (attachment.kind === "audio" && hasUrl) {
+    return (
+      <audio
+        controls
+        preload="metadata"
+        src={attachment.url}
+        className="h-10 w-[min(100%,18rem)]"
+        aria-label={attachment.name
+          ? `${t("message.audioAttachment", { defaultValue: "Voice reply" })}: ${attachment.name}`
+          : t("message.audioAttachment", { defaultValue: "Voice reply" })}
+      />
+    );
+  }
+
   if (attachment.kind === "video" && hasUrl) {
     return (
       <AttachmentFrame
@@ -60,7 +74,9 @@ export function AttachmentTile({ attachment, className, inline = false, variant 
 
   const fileKind = attachment.kind === "file"
     ? fileKindForPath(attachment.name || attachment.url || "")
-    : attachment.kind;
+    : attachment.kind === "audio"
+      ? "default"
+      : attachment.kind;
   const body = (
     <>
       <FileReferenceIcon kind={fileKind} className="size-4" />
@@ -149,6 +165,9 @@ function AttachmentFrame({
 function attachmentLabel(attachment: UIMediaAttachment, t: ReturnType<typeof useTranslation>["t"]): string {
   if (attachment.kind === "video") {
     return t("message.videoAttachment", { defaultValue: "Video attachment" });
+  }
+  if (attachment.kind === "audio") {
+    return t("message.audioAttachment", { defaultValue: "Voice reply" });
   }
   if (attachment.kind === "image") {
     return t("message.imageAttachment", { defaultValue: "Image attachment" });

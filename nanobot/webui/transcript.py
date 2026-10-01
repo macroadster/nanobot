@@ -67,6 +67,16 @@ _INLINE_MARKDOWN_VIDEO_EXTS: frozenset[str] = frozenset({
     ".webm",
 })
 _INLINE_MARKDOWN_MEDIA_EXTS = _INLINE_MARKDOWN_IMAGE_EXTS | _INLINE_MARKDOWN_VIDEO_EXTS
+_AUDIO_EXTS = frozenset({
+    ".aac",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".weba",
+})
 _TURN_DISPLAY_EVENTS: frozenset[str] = frozenset({
     "reasoning_delta",
     "reasoning_end",
@@ -166,6 +176,8 @@ def _media_kind_from_name(name: str) -> str:
         return "image"
     if ext in _INLINE_MARKDOWN_VIDEO_EXTS:
         return "video"
+    if ext in _AUDIO_EXTS:
+        return "audio"
     return "file"
 
 
@@ -1967,6 +1979,21 @@ def _normalize_tool_events(events: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _assistant_media_from_record(
+    rec: dict[str, Any],
+    augment_assistant_media: Callable[[list[str]], list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    raw_media = rec.get("media")
+    raw_media_list = cast(list[Any], raw_media) if isinstance(raw_media, list) else []
+    media_paths = [path for path in raw_media_list if isinstance(path, str) and path]
+    media: list[dict[str, Any]] = []
+    if media_paths and augment_assistant_media is not None:
+        media = augment_assistant_media(media_paths)
+    if not media and (not media_paths or augment_assistant_media is None):
+        media = _media_from_signed_urls(rec.get("media_urls"))
+    return media
+
+
 def _media_from_signed_urls(value: Any) -> list[dict[str, Any]]:
     media: list[dict[str, Any]] = []
     urls = cast(list[Any], value) if isinstance(value, list) else []
@@ -2242,6 +2269,9 @@ def _client_projection_event(
             source = _client_projection_source(record)
             if source:
                 projected["source"] = source
+            media = _assistant_media_from_record(record, augment_assistant_media)
+            if media:
+                projected["media_urls"] = media
         return projected
 
     if event == "message":
@@ -2256,19 +2286,7 @@ def _client_projection_event(
         tool_events = _normalize_tool_events(record.get("tool_events"))
         if tool_events:
             projected["tool_events"] = tool_events
-        raw_media = record.get("media")
-        media_paths = [
-            path
-            for path in cast(list[Any], raw_media)
-            if isinstance(path, str) and path
-        ] if isinstance(raw_media, list) else []
-        media = (
-            augment_assistant_media(media_paths)
-            if media_paths and augment_assistant_media is not None
-            else []
-        )
-        if not media and (not media_paths or augment_assistant_media is None):
-            media = _media_from_signed_urls(record.get("media_urls"))
+        media = _assistant_media_from_record(record, augment_assistant_media)
         if media:
             projected["media_urls"] = media
         latency_ms = record.get("latency_ms")

@@ -37,7 +37,7 @@ export interface UIImage {
   name?: string;
 }
 
-export type UIMediaKind = "image" | "video" | "file";
+export type UIMediaKind = "image" | "video" | "audio" | "file";
 
 export interface UIMediaAttachment {
   kind: UIMediaKind;
@@ -735,6 +735,9 @@ export interface SettingsPayload {
     language: string | null;
     max_duration_sec: number;
     max_upload_mb: number;
+    speak_replies?: boolean;
+    voice_id?: string;
+    voice_configured?: boolean;
     providers: Array<{
       name: string;
       label: string;
@@ -1310,6 +1313,8 @@ export interface TranscriptionSettingsUpdate {
   language: string;
   maxDurationSec: number;
   maxUploadMb: number;
+  speakReplies: boolean;
+  voiceId: string;
 }
 
 /**
@@ -1432,6 +1437,7 @@ export type InboundEvent =
       resuming?: boolean;
       /** The next answer segment continues this same assistant message. */
       merge_next?: boolean;
+      media_urls?: Array<{ url: string; name?: string; kind?: UIMediaKind }>;
     } & InboundTurnMetadata)
   | ({
       event: "reasoning_delta";
@@ -1652,6 +1658,8 @@ export type Outbound =
       intent?: "create_automation";
       workspace_scope?: WorkspaceScopePayload;
       turn_id?: string;
+      /** Ask the gateway to speak the assistant reply with Grok Voice. */
+      voice_reply?: true;
       /** Marks messages sent by the embedded WebUI, without changing the
        * generic websocket protocol for other clients. */
       webui?: true;

@@ -322,6 +322,7 @@ interface QueuedPrompt {
   images?: QueuedPromptImage[];
   quotedContext?: string;
   sessionMentions?: SessionMention[];
+  voiceReply?: boolean;
 }
 
 interface QueuedPromptImage {
@@ -509,6 +510,7 @@ function normalizeQueuedPrompt(item: unknown, index: number): QueuedPrompt | nul
     ...(images.length > 0 ? { images } : {}),
     ...(quotedContext ? { quotedContext } : {}),
     ...(sessionMentions.length > 0 ? { sessionMentions } : {}),
+    ...(record.voiceReply === true ? { voiceReply: true } : {}),
   };
 }
 
@@ -1013,6 +1015,7 @@ export function ThreadComposer({
   const skipNextQueuedFlushRef = useRef(false);
   const skipQueuedPromptPersistRef = useRef(false);
   const voiceShortcutDownRef = useRef(false);
+  const voiceTranscriptsRef = useRef<string[]>([]);
   const voiceErrorFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isHero = variant === "hero";
   const voiceShortcutLabel = useMemo(getVoiceShortcutLabel, []);
@@ -1603,6 +1606,7 @@ export function ThreadComposer({
     setSlashMenuDismissed(false);
     setCliAppMenuDismissed(false);
     setCursorPosition(0);
+    voiceTranscriptsRef.current = [];
     clear();
     requestAnimationFrame(() => {
       const el = textareaRef.current;
@@ -1612,9 +1616,14 @@ export function ThreadComposer({
     });
   }, [clear, pendingQueueKey]);
 
+  const textHasVoiceTranscript = useCallback((text: string) => (
+    voiceTranscriptsRef.current.some((snippet) => snippet.length > 0 && text.includes(snippet))
+  ), []);
+
   const appendTranscription = useCallback((text: string) => {
     const transcript = text.trim();
     if (!transcript) return;
+    voiceTranscriptsRef.current = [...voiceTranscriptsRef.current, transcript].slice(-8);
     secondEnterPromptIdRef.current = null;
     setValue((current) => {
       if (!current.trim()) return transcript;
@@ -1655,7 +1664,7 @@ export function ThreadComposer({
     onError: setVoiceError,
     onTranscript: appendTranscription,
     onTranscribeAudio,
-    wantsWav: transcriptionProvider === "xiaomi_mimo",
+    wantsWav: transcriptionProvider === "xiaomi_mimo" || transcriptionProvider === "grok",
   });
 
   useEffect(() => () => clearVoiceErrorTimers(), [clearVoiceErrorTimers]);
@@ -1851,6 +1860,7 @@ export function ThreadComposer({
 
   const queueGuidancePrompt = useCallback(() => {
     const text = value.trim();
+    const voiceReply = textHasVoiceTranscript(text);
     if (!canQueueGuidance || (!text && readyImages.length === 0)) return;
     if (utf8Bytes(formatQuotedUserMessage(text, normalizedQuotedContext)) > maxTextBytes) {
       setInlineError(textTooLargeMessage());
@@ -1870,8 +1880,10 @@ export function ThreadComposer({
         ...(activeSessionMentions.length > 0
           ? { sessionMentions: activeSessionMentions }
           : {}),
+        ...(voiceReply ? { voiceReply: true } : {}),
       },
     ]);
+    if (voiceReply) voiceTranscriptsRef.current = [];
     clear();
     clearComposerText();
     onQuotedContextChange?.(null);
@@ -1884,6 +1896,7 @@ export function ThreadComposer({
     normalizedQuotedContext,
     onQuotedContextChange,
     readyImages,
+    textHasVoiceTranscript,
     textTooLargeMessage,
     value,
   ]);
@@ -1897,6 +1910,9 @@ export function ThreadComposer({
   const editQueuedPrompt = useCallback((prompt: QueuedPrompt) => {
     secondEnterPromptIdRef.current = null;
     setQueuedPrompts((items) => items.filter((item) => item.id !== prompt.id));
+    if (prompt.voiceReply && prompt.text.trim()) {
+      voiceTranscriptsRef.current = [...voiceTranscriptsRef.current, prompt.text.trim()];
+    }
     replaceMentionInput(prompt.text, prompt.text.length);
     setSelectedSessionMentions(prompt.sessionMentions ?? []);
     setInlineError(null);
@@ -1935,6 +1951,7 @@ export function ThreadComposer({
         const options: SendOptions | undefined = (
           prompt.quotedContext
           || prompt.sessionMentions?.length
+          || prompt.voiceReply
           || isStreaming
         )
           ? {
@@ -1942,6 +1959,7 @@ export function ThreadComposer({
               ...(prompt.sessionMentions?.length
                 ? { sessionMentions: prompt.sessionMentions }
                 : {}),
+              ...(prompt.voiceReply ? { voiceReply: true } : {}),
               ...(isStreaming ? { continueActiveTurn: true } : {}),
             }
           : undefined;
@@ -1962,13 +1980,14 @@ export function ThreadComposer({
     setQueuedPrompts((items) => items.filter((item) => item.id !== nextPrompt.id));
     const queuedImages = queuedImagesToSendImages(nextPrompt.images);
     const options: SendOptions | undefined = (
-      nextPrompt.quotedContext || nextPrompt.sessionMentions?.length
+      nextPrompt.quotedContext || nextPrompt.sessionMentions?.length || nextPrompt.voiceReply
     )
       ? {
           ...(nextPrompt.quotedContext ? { quotedContext: nextPrompt.quotedContext } : {}),
           ...(nextPrompt.sessionMentions?.length
             ? { sessionMentions: nextPrompt.sessionMentions }
             : {}),
+          ...(nextPrompt.voiceReply ? { voiceReply: true } : {}),
         }
       : undefined;
     if (queuedImages?.length && options) onSend(nextPrompt.text.trim(), queuedImages, options);
@@ -2013,6 +2032,7 @@ export function ThreadComposer({
     if (!canSend) return;
     const trimmed = value.trim();
     const content = trimmed;
+    const voiceReply = textHasVoiceTranscript(content);
     if (utf8Bytes(formatQuotedUserMessage(content, normalizedQuotedContext)) > maxTextBytes) {
       setInlineError(textTooLargeMessage());
       return;
@@ -2038,6 +2058,7 @@ export function ThreadComposer({
       || attachedMcpPresets.length > 0
       || activeSessionMentions.length > 0
       || normalizedQuotedContext
+      || voiceReply
         ? {
             ...(attachedCliApps.length > 0 ? { cliApps: attachedCliApps } : {}),
             ...(attachedMcpPresets.length > 0 ? { mcpPresets: attachedMcpPresets } : {}),
@@ -2045,6 +2066,7 @@ export function ThreadComposer({
               ? { sessionMentions: activeSessionMentions }
               : {}),
             ...(normalizedQuotedContext ? { quotedContext: normalizedQuotedContext } : {}),
+            ...(voiceReply ? { voiceReply: true } : {}),
           }
         : undefined;
     const hasPlainTextCommandPayload =
@@ -2075,6 +2097,7 @@ export function ThreadComposer({
       // A pending send can finish after this composer unmounts and a newer draft is started.
       if (draftKey && draftStore && draftStore.get(draftKey) !== submittedDraft) return;
       if (draftKey) draftStore?.delete(draftKey);
+      voiceTranscriptsRef.current = [];
       if (hasTouchPrimaryPointer) textareaRef.current?.blur();
       setQueuedPrompts([]);
       // Bubble owns the data URL copy; safe to revoke every staged blob
@@ -2128,6 +2151,7 @@ export function ThreadComposer({
     normalizedQuotedContext,
     readyImages,
     slashCommands,
+    textHasVoiceTranscript,
     textTooLargeMessage,
     value,
   ]);

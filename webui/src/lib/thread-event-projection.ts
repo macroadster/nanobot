@@ -821,6 +821,10 @@ export function projectThreadEvent(
     if (state.suppressUntilTurnEnd) return state;
     const turn = turnFieldsForProjection(state, event, "answer");
     const mergeNext = event.resuming === true && event.merge_next === true;
+    const media = event.media_urls?.map((item) => toMediaAttachment(item));
+    const withMedia = (message: UIMessage): UIMessage => (
+      media?.length ? { ...message, media: [...(message.media ?? []), ...media] } : message
+    );
     let targetIndex = activeAssistantIndex(state, turn);
     if (targetIndex === null) {
       targetIndex = findStreamingAssistantIndex(state.messages, state.closedAssistantIds, turn);
@@ -830,7 +834,7 @@ export function projectThreadEvent(
         const id = projectionMessageId(event, options);
         state.messages = [
           ...state.messages,
-          {
+          withMedia({
             id,
             role: "assistant",
             content: event.text,
@@ -839,27 +843,30 @@ export function projectThreadEvent(
             ...(event.source ? { source: event.source } : {}),
             ...(event.response_sources !== undefined ? { responseSources: event.response_sources } : {}),
             createdAt: projectionCreatedAt(event, options),
-          },
+          }),
         ];
         targetIndex = state.messages.length - 1;
       } else {
         const target = state.messages[targetIndex];
-        state.messages = replaceMessageAt(state.messages, targetIndex, {
+        state.messages = replaceMessageAt(state.messages, targetIndex, withMedia({
           ...target,
           content: event.text,
           isStreaming: true,
           ...turn,
           ...(event.source ? { source: event.source } : {}),
           ...(event.response_sources !== undefined ? { responseSources: event.response_sources } : {}),
-        });
+        }));
       }
-    } else if ((event.source || event.response_sources !== undefined) && targetIndex !== null) {
-      state.messages = replaceMessageAt(state.messages, targetIndex, {
+    } else if (
+      (event.source || event.response_sources !== undefined || media?.length)
+      && targetIndex !== null
+    ) {
+      state.messages = replaceMessageAt(state.messages, targetIndex, withMedia({
         ...state.messages[targetIndex],
         ...turn,
         ...(event.source ? { source: event.source } : {}),
         ...(event.response_sources !== undefined ? { responseSources: event.response_sources } : {}),
-      });
+      }));
     }
     if (targetIndex !== null) state.activeAssistantId = state.messages[targetIndex].id;
     state.mergeReasoning = mergeNext && state.activeAssistantId !== null;

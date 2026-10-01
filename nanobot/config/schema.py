@@ -1,6 +1,7 @@
 """Configuration schema using Pydantic."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
@@ -49,6 +50,45 @@ class TranscriptionConfig(Base):
     language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}$")
     max_duration_sec: int = Field(default=120, ge=1, le=600)
     max_upload_mb: int = Field(default=25, ge=1, le=100)
+
+
+class VoiceConfig(Base):
+    """Spoken replies using Grok Voice text-to-speech.
+
+    Inbound speech still uses ``transcription``. When a Discord voice message
+    or a WebUI voice turn is answered, nanobot speaks the reply with
+    ``providers.grok`` credentials.
+    """
+
+    enabled: bool = True
+    speak_replies: bool = True
+    voice_id: str = "eve"
+    language: str | None = None
+    max_chars: int = Field(default=4000, ge=1, le=60_000)
+
+    @field_validator("voice_id")
+    @classmethod
+    def _normalize_voice_id(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", cleaned):
+            raise ValueError(
+                "voice_id must be 1-64 letters, numbers, underscores, or hyphens"
+            )
+        return cleaned
+
+    @field_validator("language")
+    @classmethod
+    def _normalize_voice_language(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if cleaned.lower() == "auto":
+            return "auto"
+        if not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z]{2})?", cleaned):
+            raise ValueError("voice language must be auto or a code such as en, zh, or pt-BR")
+        return cleaned
 
 
 class DreamConfig(Base):
@@ -432,6 +472,7 @@ class Config(BaseSettings):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)

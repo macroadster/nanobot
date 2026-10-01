@@ -23,6 +23,17 @@ const VIDEO_EXTENSIONS = new Set([
   ".3gp",
 ]);
 
+const AUDIO_EXTENSIONS = new Set([
+  ".aac",
+  ".flac",
+  ".m4a",
+  ".mp3",
+  ".ogg",
+  ".opus",
+  ".wav",
+  ".weba",
+]);
+
 function cleanPath(value: string): string {
   return value.split(/[?#]/, 1)[0]?.toLowerCase() ?? "";
 }
@@ -39,11 +50,13 @@ function explicitMediaKind(media: { url?: string; name?: string }): UIMediaKind 
   const url = media.url ?? "";
   if (url.startsWith("data:image/")) return "image";
   if (url.startsWith("data:video/")) return "video";
+  if (url.startsWith("data:audio/")) return "audio";
 
   const ext = extensionOf(media.name) || extensionOf(url);
   if (!ext) return null;
   if (IMAGE_EXTENSIONS.has(ext)) return "image";
   if (VIDEO_EXTENSIONS.has(ext)) return "video";
+  if (AUDIO_EXTENSIONS.has(ext)) return "audio";
   return "file";
 }
 

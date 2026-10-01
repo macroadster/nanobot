@@ -2664,6 +2664,48 @@ async def test_send_delta_emits_delta_and_stream_end() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_delta_attaches_grok_voice_on_final_segment(tmp_path: Path) -> None:
+    bus = MagicMock()
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"], "streaming": True},
+        bus,
+        gateway=_basic_handler(bus),
+    )
+    mock_ws = AsyncMock()
+    channel._attach(mock_ws, "chat-1")
+    audio = tmp_path / "reply.mp3"
+    audio.write_bytes(b"ID3voice")
+    seen: list[tuple[str, bool]] = []
+
+    async def fake_synthesize(text: str, metadata: dict) -> Path | None:
+        seen.append((text, metadata.get("grok_voice_reply") is True))
+        return audio
+
+    channel._voice_reply_path = fake_synthesize  # type: ignore[method-assign]
+
+    await channel.send_delta(
+        "chat-1",
+        "hello",
+        metadata={"grok_voice_reply": True},
+        stream_id="sid",
+    )
+    await channel.send_delta(
+        "chat-1",
+        "",
+        metadata={"grok_voice_reply": True},
+        stream_id="sid",
+        stream_end=True,
+    )
+
+    assert seen == [("hello", True)]
+    end = json.loads(mock_ws.send.call_args_list[-1][0][0])
+    assert end["event"] == "stream_end"
+    assert end["media"] == [str(audio)]
+    assert end["media_urls"][0]["name"].endswith(".mp3")
+    assert end["media_urls"][0]["url"].startswith("/api/media/")
+
+
+@pytest.mark.asyncio
 async def test_send_delta_preserves_webui_source_metadata() -> None:
     bus = MagicMock()
     channel = WebSocketChannel({"enabled": True, "allowFrom": ["*"], "streaming": True}, bus, gateway=_basic_handler(bus))

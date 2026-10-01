@@ -1941,6 +1941,24 @@ describe("NanobotClient", () => {
     });
   });
 
+  it("marks a voice-originated message for a spoken reply", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    lastSocket().fakeOpen();
+    client.sendMessage("chat-x", "hello voice", undefined, { voiceReply: true });
+    expect(JSON.parse(lastSocket().sent.at(-1) as string)).toEqual({
+      type: "message",
+      chat_id: "chat-x",
+      content: "hello voice",
+      voice_reply: true,
+      webui: true,
+    });
+  });
+
   it("handles the silent system-command lifecycle without hiding concurrent events", async () => {
     const client = new NanobotClient({
       url: "ws://test",

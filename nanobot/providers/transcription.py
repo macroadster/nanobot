@@ -711,6 +711,60 @@ class GroqTranscriptionProvider:
         )
 
 
+class GrokTranscriptionProvider:
+    """Voice transcription provider using xAI Grok Voice speech-to-text."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        language: str | None = None,
+        model: str | None = None,
+    ):
+        from nanobot.providers.speech import grok_stt_url
+
+        self.api_key = api_key or os.environ.get("XAI_API_KEY")
+        self.api_url = grok_stt_url(api_base)
+        self.language = language or None
+        self.model = model or "grok-voice-transcribe-2.0"
+        logger.debug("Grok transcription endpoint: {}", self.api_url)
+
+    async def transcribe(self, file_path: str | Path) -> str:
+        if not self.api_key:
+            logger.warning("Grok API key not configured for transcription")
+            return ""
+        path = Path(file_path)
+        if not path.exists():
+            logger.error("Audio file not found: {}", file_path)
+            return ""
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            logger.exception("Grok transcription error: cannot read audio file: {}", exc)
+            return ""
+
+        def build_request() -> dict[str, Any]:
+            fields: list[tuple[str, tuple[Any, ...]]] = [
+                ("model", (None, self.model)),
+            ]
+            if self.language:
+                fields.append(("language", (None, self.language)))
+                fields.append(("format", (None, "true")))
+            fields.append(("file", (path.name, data, _audio_mime_type(path))))
+            return {
+                "url": self.api_url,
+                "headers": {"Authorization": f"Bearer {self.api_key}"},
+                "files": fields,
+                "timeout": 60.0,
+            }
+
+        return await _post_with_retry(
+            build_request,
+            "Grok",
+            _text_from_transcription_payload,
+        )
+
+
 class OpenRouterTranscriptionProvider:
     """Voice transcription provider using OpenRouter's speech-to-text endpoint."""
 

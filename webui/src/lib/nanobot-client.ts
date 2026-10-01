@@ -1024,6 +1024,7 @@ export class NanobotClient {
       turnId?: string;
       /** False for side-channel or injected messages that do not own a lifecycle. */
       startsNewRun?: boolean;
+      voiceReply?: boolean;
     },
   ): void {
     const temporary = this.temporaryChatIds.has(chatId);
@@ -1042,6 +1043,7 @@ export class NanobotClient {
       ...(options?.intent === "create_automation" ? { intent: options.intent } : {}),
       ...(options?.workspaceScope ? { workspace_scope: options.workspaceScope } : {}),
       ...(options?.turnId ? { turn_id: options.turnId } : {}),
+      ...(options?.voiceReply ? { voice_reply: true as const } : {}),
       webui: true,
     };
     if (!this.frameFitsTransport(frame)) {

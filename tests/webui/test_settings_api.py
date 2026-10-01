@@ -1463,6 +1463,58 @@ def test_update_transcription_settings_writes_top_level_only(
     assert saved.transcription.max_upload_mb == 20
     assert payload["transcription"]["provider"] == "groq"
     assert payload["transcription"]["provider_configured"] is True
+    assert payload["transcription"]["speak_replies"] is True
+    assert payload["transcription"]["voice_id"] == "eve"
+
+
+def test_settings_payload_exposes_grok_voice_transcription(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.transcription.provider = "grok"
+    config.providers.grok.api_key = "xai-test"
+    config.voice.voice_id = "ara"
+    config.voice.speak_replies = False
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = settings_payload()
+
+    assert payload["transcription"]["provider"] == "grok"
+    assert payload["transcription"]["model"] == "grok-voice-transcribe-2.0"
+    assert payload["transcription"]["provider_configured"] is True
+    assert payload["transcription"]["speak_replies"] is False
+    assert payload["transcription"]["voice_id"] == "ara"
+    assert payload["transcription"]["voice_configured"] is True
+    providers = {provider["name"]: provider for provider in payload["transcription"]["providers"]}
+    assert providers["grok"]["label"] == "Grok (xAI)"
+    assert providers["grok"]["configured"] is True
+
+
+def test_update_transcription_settings_saves_grok_voice(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    save_config(Config(), config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = update_transcription_settings(
+        {
+            "provider": ["grok"],
+            "speakReplies": ["false"],
+            "voiceId": ["rex"],
+        }
+    )
+
+    saved = load_config(config_path)
+    assert saved.transcription.provider == "grok"
+    assert saved.voice.speak_replies is False
+    assert saved.voice.voice_id == "rex"
+    assert payload["transcription"]["voice_id"] == "rex"
+    assert payload["transcription"]["speak_replies"] is False
 
 
 def test_update_transcription_settings_accepts_openrouter(

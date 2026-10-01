@@ -21,6 +21,7 @@ from websockets.asyncio.server import Server, ServerConnection, serve, unix_serv
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request as WsRequest
 
+from nanobot.audio.speech import synthesize_voice_reply
 from nanobot.bus.events import (
     OUTBOUND_META_AGENT_UI,
     OutboundMessage,
@@ -1190,10 +1191,15 @@ class WebSocketChannel(BaseChannel):
         turn_id = msg.metadata.get(WEBUI_TURN_METADATA_KEY)
         if isinstance(turn_id, str) and turn_id:
             payload["turn_id"] = turn_id
-        if msg.media:
-            payload["media"] = msg.media
+        media_entries = list(msg.media or [])
+        if progress_event is None and msg.event is None:
+            audio_path = await self._voice_reply_path(text, msg.metadata)
+            if audio_path is not None:
+                media_entries.append(str(audio_path))
+        if media_entries:
+            payload["media"] = media_entries
             urls: list[dict[str, str]] = []
-            for entry in msg.media:
+            for entry in media_entries:
                 signed = self._media.sign_or_stage_media_path(Path(entry))
                 if signed is not None:
                     urls.append(signed)
@@ -1340,6 +1346,7 @@ class WebSocketChannel(BaseChannel):
         meta = metadata or {}
         stream_key = (chat_id, str(stream_id or ""))
         completed_text: str | None = None
+        voice_text: str | None = None
         if stream_end:
             body: dict[str, Any] = {"event": "stream_end", "chat_id": chat_id}
             buffered = (
@@ -1352,6 +1359,8 @@ class WebSocketChannel(BaseChannel):
             full_text = "".join(buffered)
             rewritten = self._media.rewrite_local_markdown_images(full_text)
             completed_text = rewritten
+            if not resuming and not merge_next:
+                voice_text = full_text
             if delta or rewritten != full_text:
                 body["text"] = rewritten
         else:
@@ -1367,6 +1376,13 @@ class WebSocketChannel(BaseChannel):
             body["resuming"] = True
         if stream_end and merge_next:
             body["merge_next"] = True
+        if voice_text is not None:
+            audio_path = await self._voice_reply_path(voice_text, meta)
+            if audio_path is not None:
+                body["media"] = [str(audio_path)]
+                signed = self._media.sign_or_stage_media_path(audio_path)
+                if signed is not None:
+                    body["media_urls"] = [signed]
         self._persist_turn_stream_event(
             chat_id,
             body,
@@ -1380,6 +1396,18 @@ class WebSocketChannel(BaseChannel):
             return
         for connection in conns:
             await self._safe_send_to(connection, raw, label=" stream ")
+
+    async def _voice_reply_path(
+        self,
+        text: str,
+        metadata: dict[str, Any] | None,
+    ) -> Path | None:
+        """Synthesize a Grok Voice reply. Failures leave the text reply intact."""
+        try:
+            return await synthesize_voice_reply(text, metadata)
+        except Exception:
+            self.logger.exception("Grok voice synthesis failed")
+            return None
 
     async def send_payload(
         self,

@@ -49,6 +49,11 @@ TRANSCRIPTION_PROVIDERS: tuple[TranscriptionProviderSpec, ...] = (
         adapter="nanobot.providers.transcription:GroqTranscriptionProvider",
     ),
     TranscriptionProviderSpec(
+        name="grok",
+        default_model="grok-voice-transcribe-2.0",
+        adapter="nanobot.providers.transcription:GrokTranscriptionProvider",
+    ),
+    TranscriptionProviderSpec(
         name="openai",
         default_model="whisper-1",
         adapter="nanobot.providers.transcription:OpenAITranscriptionProvider",

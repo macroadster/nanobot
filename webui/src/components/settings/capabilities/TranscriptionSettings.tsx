@@ -24,6 +24,8 @@ export const DEFAULT_TRANSCRIPTION_FORM: TranscriptionSettingsUpdate = {
   language: "",
   maxDurationSec: 120,
   maxUploadMb: 25,
+  speakReplies: true,
+  voiceId: "eve",
 };
 
 export const DEFAULT_TRANSCRIPTION_SETTINGS: NonNullable<SettingsPayload["transcription"]> = {
@@ -34,6 +36,9 @@ export const DEFAULT_TRANSCRIPTION_SETTINGS: NonNullable<SettingsPayload["transc
   language: null,
   max_duration_sec: 120,
   max_upload_mb: 25,
+  speak_replies: true,
+  voice_id: "eve",
+  voice_configured: false,
   providers: [],
 };
 
@@ -46,6 +51,8 @@ export function transcriptionFormFromPayload(payload: SettingsPayload): Transcri
     language: transcription.language ?? "",
     maxDurationSec: transcription.max_duration_sec,
     maxUploadMb: transcription.max_upload_mb,
+    speakReplies: transcription.speak_replies ?? true,
+    voiceId: transcription.voice_id || "eve",
   };
 }
 
@@ -149,6 +156,41 @@ export function TranscriptionSettings({
             value={form.language}
             onChange={(event) => onChangeForm((prev) => ({ ...prev, language: event.target.value }))}
             placeholder={tx("settings.voice.languageAuto", "Auto")}
+            className="h-9 w-full rounded-full text-end text-[13px]"
+          />
+        </SettingsRow>
+        <SettingsRow
+          title={tx("settings.rows.speakReplies", "Speak replies")}
+          description={tx(
+            "settings.help.speakReplies",
+            "Discord voice messages and WebUI voice turns are answered aloud with Grok Voice. Text messages stay text.",
+          )}
+        >
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <StatusPill tone={transcription.voice_configured ? "success" : "neutral"}>
+              {transcription.voice_configured
+                ? tx("settings.voice.grokReady", "Grok ready")
+                : tx("settings.voice.grokMissing", "Grok key needed")}
+            </StatusPill>
+            <ToggleButton
+              checked={form.speakReplies}
+              onChange={(speakReplies) => onChangeForm((prev) => ({ ...prev, speakReplies }))}
+              ariaLabel={tx("settings.rows.speakReplies", "Speak replies")}
+              label={form.speakReplies ? tx("settings.values.on", "On") : tx("settings.values.off", "Off")}
+            />
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          title={tx("settings.rows.voiceId", "Grok voice")}
+          description={tx(
+            "settings.help.voiceId",
+            "Built-in voice id such as eve, ara, rex, sal, or leo. A custom voice id works too.",
+          )}
+        >
+          <Input
+            value={form.voiceId}
+            onChange={(event) => onChangeForm((prev) => ({ ...prev, voiceId: event.target.value }))}
+            placeholder="eve"
             className="h-9 w-full rounded-full text-end text-[13px]"
           />
         </SettingsRow>
