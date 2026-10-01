@@ -717,3 +717,147 @@ async def test_concurrent_mcp_reconnect_reuses_fresh_session(
     assert outputs == ["fresh:alpha", "fresh:beta"]
     assert connect_count == 2
     assert closed == ["remote"]
+
+
+class _PingSession:
+    def __init__(self, error: BaseException | None = None) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def send_ping(self) -> None:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.mark.asyncio
+async def test_reload_leaves_disabled_mcp_server_unconnected(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+    config = load_config()
+    config.tools.mcp_servers["docs"] = MCPServerConfig(
+        type="stdio",
+        command="docs-mcp",
+        enabled=False,
+    )
+    save_config(config)
+    attempted: list[str] = []
+
+    async def _fake_connect(servers, registry):
+        attempted.extend(servers)
+        for name in servers:
+            registry.register(_FakeMcpTool(f"mcp_{name}_search"))
+        stack = AsyncExitStack()
+        await stack.__aenter__()
+        return {name: stack for name in servers}
+
+    monkeypatch.setattr("nanobot.agent.tools.mcp.connect_mcp_servers", _fake_connect)
+    provider, registry = _make_provider(mcp_servers={})
+
+    skipped = await provider.reload()
+
+    assert skipped["added"] == []
+    assert attempted == []
+    assert "docs" not in provider.configured_server_names
+    assert not registry.has("mcp_docs_search")
+
+    config = load_config()
+    config.tools.mcp_servers["docs"].enabled = True
+    save_config(config)
+
+    added = await provider.reload()
+
+    assert added["added"] == ["docs"]
+    assert registry.has("mcp_docs_search")
+
+    config = load_config()
+    config.tools.mcp_servers["docs"].enabled = False
+    save_config(config)
+
+    removed = await provider.reload()
+
+    assert removed["removed"] == ["docs"]
+    assert not registry.has("mcp_docs_search")
+    assert provider.connected_server_names == set()
+    saved = load_config().tools.mcp_servers["docs"]
+    assert saved.enabled is False
+    assert saved.command == "docs-mcp"
+    await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_health_check_marks_exited_mcp_server_failed() -> None:
+    provider, registry = _make_provider(mcp_servers={"docs": _stdio_server("docs-mcp")})
+    registry.register(_FakeMcpTool("mcp_docs_search"))
+
+    async def _finished() -> None:
+        return None
+
+    owner = asyncio.create_task(_finished())
+    await owner
+    provider._connections["docs"] = mcp_runtime._OwnedMCPConnection(owner, asyncio.Event())
+    provider._runtime_statuses["docs"] = "connected"
+
+    status = await provider.check_health(force=True)
+
+    assert status == {"docs": "failed"}
+    assert provider.connected_server_names == set()
+    assert not registry.has("mcp_docs_search")
+    await provider.aclose()
+
+
+async def _open_health_connection(
+    provider: MCPProvider,
+    server_name: str,
+) -> asyncio.Event:
+    stop = asyncio.Event()
+
+    async def _hold() -> None:
+        await stop.wait()
+
+    owner = asyncio.create_task(_hold())
+    provider._connections[server_name] = mcp_runtime._OwnedMCPConnection(owner, stop)
+    return stop
+
+
+@pytest.mark.asyncio
+async def test_health_check_marks_dead_session_failed() -> None:
+    provider, registry = _make_provider(mcp_servers={"docs": _stdio_server("docs-mcp")})
+    tool = _FakeMcpTool("mcp_docs_search")
+    session = _PingSession(ConnectionResetError("reset"))
+    tool._server_name = "docs"  # pyright: ignore[reportAttributeAccessIssue]
+    tool._session = session  # pyright: ignore[reportAttributeAccessIssue]
+    registry.register(tool)
+    stop = await _open_health_connection(provider, "docs")
+    provider._runtime_statuses["docs"] = "connected"
+
+    failed = await provider.check_health(force=True)
+
+    assert failed == {"docs": "failed"}
+    assert session.calls == 2
+    assert not registry.has("mcp_docs_search")
+    stop.set()
+    await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_health_check_keeps_server_that_answers_ping() -> None:
+    provider, registry = _make_provider(mcp_servers={"docs": _stdio_server("docs-mcp")})
+    tool = _FakeMcpTool("mcp_docs_search")
+    session = _PingSession()
+    tool._server_name = "docs"  # pyright: ignore[reportAttributeAccessIssue]
+    tool._session = session  # pyright: ignore[reportAttributeAccessIssue]
+    registry.register(tool)
+    stop = await _open_health_connection(provider, "docs")
+    provider._runtime_statuses["docs"] = "connected"
+
+    healthy = await provider.check_health(force=True)
+
+    assert healthy == {"docs": "connected"}
+    assert session.calls == 1
+    assert registry.has("mcp_docs_search")
+    stop.set()
+    await provider.aclose()

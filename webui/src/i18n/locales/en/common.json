@@ -936,6 +936,8 @@
       "remove": "Remove",
       "enable": "Enable",
       "enabled": "Enabled",
+      "disable": "Disable",
+      "disabled": "Disabled",
       "setup": "Connect",
       "configure": "Connect",
       "reconnect": "Reconnect",

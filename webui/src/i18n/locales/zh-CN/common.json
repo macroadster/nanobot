@@ -938,6 +938,8 @@
       "remove": "移除",
       "enable": "启用",
       "enabled": "已启用",
+      "disable": "停用",
+      "disabled": "已停用",
       "setup": "连接",
       "configure": "连接",
       "reconnect": "重新连接",

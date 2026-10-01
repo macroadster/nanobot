@@ -961,6 +961,8 @@
       "remove": "제거",
       "enable": "활성화",
       "enabled": "활성화됨",
+      "disable": "비활성화",
+      "disabled": "비활성화됨",
       "setup": "연결",
       "configure": "연결",
       "reconnect": "다시 연결",

@@ -406,7 +406,11 @@ class AgentLoop:
             bus=bus,
             subagents=self.subagents,
             parent_registry=self.tools,
-            mcp_servers=lambda: self.tools_config.mcp_servers,
+            mcp_servers=lambda: {
+                name: cfg
+                for name, cfg in self.tools_config.mcp_servers.items()
+                if cfg.enabled
+            },
         )
         self._unified_session = unified_session
         self._running = False

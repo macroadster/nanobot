@@ -19,6 +19,9 @@ These commands work inside chat channels and interactive agent sessions:
 | `/dream-prompt` | Show how Dream is being guided for memory |
 | `/dream-prompt init` | Create an editable Dream memory guide at `prompts/dream.md` |
 | `/skill` | List enabled skills and their descriptions |
+| `/mcp` | List configured MCP servers and whether each one is enabled |
+| `/mcp enable <name>` | Enable a configured MCP server, or add a known preset |
+| `/mcp disable <name>` | Disable an MCP server without deleting its configuration |
 | `/trigger` | Show local trigger usage |
 | `/trigger <name>` | Create a named local trigger for the current chat/session |
 | `/pairing` | List pending pairing requests |
@@ -59,6 +62,18 @@ To switch presets for future turns:
 ```
 
 Preset names come from the top-level `modelPresets` config. Switching affects only the current session and persists the selection in that session, so later turns keep using it across process restarts. It does not rewrite `config.json`, does not change other sessions, and does not alter an in-progress turn's captured model. Sessions without a saved selection follow `agents.defaults.modelPreset` (or the implicit `default` preset when it is omitted). See [Configuration: Model presets](./configuration.md#model-presets) for setup details.
+
+## MCP servers
+
+`/mcp` lists the servers saved in `tools.mcpServers` and whether each one is enabled, connected, or not responding.
+
+```text
+/mcp
+/mcp disable filesystem
+/mcp enable filesystem
+```
+
+Disable keeps the server's command, URL, headers, and tool allowlist in `config.json`. It disconnects the server until you enable it again. A known preset name can be enabled even when it is not in the config yet. The same switch is in the WebUI under **Apps → MCP**, and `enabled: false` on a server entry does the same thing from the config file.
 
 ## Local triggers
 

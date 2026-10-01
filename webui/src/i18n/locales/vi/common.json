@@ -961,6 +961,8 @@
       "remove": "Xóa",
       "enable": "Bật",
       "enabled": "Đã bật",
+      "disable": "Tắt",
+      "disabled": "Đã tắt",
       "setup": "Kết nối",
       "configure": "Kết nối",
       "reconnect": "Kết nối lại",

@@ -553,21 +553,29 @@ function McpAppsCatalogRow({
   const anotherOAuthBusy = Boolean(actionKey?.startsWith("oauth:")) && !oauthBusy;
   const busy = enableBusy || disableBusy || removeBusy || testBusy || reconnectBusy || toolsBusy || oauthBusy;
   const agentPlugin = preset.source === "agent-plugin";
-  const toggleable = preset.enabled !== undefined;
+  const toggleable = agentPlugin;
+  const explicitlyDisabled = !agentPlugin && preset.installed && preset.enabled === false;
   const isOAuth = preset.auth === "oauth";
   const missingFields = preset.required_fields.filter((field) => field.required && !field.configured);
   const hasFields = preset.required_fields.length > 0;
   const needsSetupInput = missingFields.length > 0;
   const configuredInstalled = preset.installed && preset.configured;
-  const readyInstalled = preset.enabled ?? configuredInstalled;
-  const runtimeConnected = !toggleable && preset.runtime_status === "connected";
-  const runtimeConnecting = !toggleable && preset.runtime_status === "connecting";
-  const runtimeFailed = !toggleable && preset.installed && preset.runtime_status === "failed";
+  const readyInstalled = agentPlugin
+    ? preset.enabled === true
+    : configuredInstalled && !explicitlyDisabled;
+  const runtimeConnected = !toggleable && !explicitlyDisabled && preset.runtime_status === "connected";
+  const runtimeConnecting = !toggleable && !explicitlyDisabled && preset.runtime_status === "connecting";
+  const runtimeFailed = !toggleable
+    && !explicitlyDisabled
+    && preset.installed
+    && preset.runtime_status === "failed";
   const statusLabel = toggleable
     ? tx("settings.nanobotFeatures.enabled", "Enabled")
-    : runtimeConnected
-      ? tx("connection.open", "Connected")
-      : mcpPresetStatusLabel(preset.status, tx);
+    : explicitlyDisabled
+      ? tx("settings.mcp.disabled", "Disabled")
+      : runtimeConnected
+        ? tx("connection.open", "Connected")
+        : mcpPresetStatusLabel(preset.status, tx);
   const failureLabel = tx("settings.mcp.connectionFailed", "Connection failed.");
   const failureStatusLabel = failureLabel.replace(/[.!。！]+$/u, "");
   const description = tx(
@@ -625,7 +633,11 @@ function McpAppsCatalogRow({
               <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
             ) : null}
             <span className="truncate">
-              {runtimeFailed ? failureLabel : detail}
+              {explicitlyDisabled
+                ? tx("settings.mcp.disabled", "Disabled")
+                : runtimeFailed
+                  ? failureLabel
+                  : detail}
             </span>
           </p>
         </div>
@@ -646,6 +658,26 @@ function McpAppsCatalogRow({
                 tone="danger"
                 onClick={onOAuthCancel}
               />
+            </>
+          ) : explicitlyDisabled ? (
+            <>
+              <AppsActionButton
+                ariaLabel={tx("settings.mcp.enable", "Enable")}
+                visibleLabel={tx("settings.mcp.enable", "Enable")}
+                busy={enableBusy}
+                disabled={busy && !enableBusy}
+                onClick={() => onAction("enable", preset.name, values)}
+              />
+              <AppsActionButton
+                ariaLabel={t("settings.mcp.manageTitle", {
+                  name: preset.display_name,
+                  defaultValue: "Manage {{name}}",
+                })}
+                disabled={busy}
+                onClick={() => openManagement("overview")}
+              >
+                <SlidersHorizontal className="h-4 w-4" aria-hidden />
+              </AppsActionButton>
             </>
           ) : runtimeConnecting && configuredInstalled ? (
             <>
@@ -955,7 +987,8 @@ function appsTitle(item: AppsCatalogItem): string {
 
 function appsReady(item: AppsCatalogItem): boolean {
   if (item.kind === "cli") return item.app.installed;
-  if (item.preset.enabled !== undefined) return item.preset.enabled;
+  if (item.preset.source === "agent-plugin") return item.preset.enabled === true;
+  if (item.preset.enabled === false) return false;
   return item.preset.installed &&
     item.preset.configured &&
     item.preset.runtime_status === "connected";

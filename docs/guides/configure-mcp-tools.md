@@ -58,6 +58,8 @@ For manual or deployment-managed config, add this to `~/.nanobot/config.json`:
 
 Restart nanobot and ask a question that requires the MCP tool.
 
+To turn a server off without deleting it, set `"enabled": false` on that `mcpServers` entry, use **Apps → MCP**, or send `/mcp disable <name>` from a chat. `/mcp` lists each server. `/mcp enable <name>` turns it back on. A running gateway picks up `config.json` changes without a separate restart. If a server that was connected stops responding, the WebUI Apps page shows that the connection failed.
+
 ## Production notes
 
 - Prefer `enabledTools` over exposing every tool by default.

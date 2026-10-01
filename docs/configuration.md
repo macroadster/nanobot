@@ -2201,6 +2201,24 @@ Use `enabledTools` to register only a subset of tools from an MCP server:
 
 `enabledTools` accepts either the raw MCP tool name (for example `read_file`) or the wrapped nanobot tool name (for example `mcp_filesystem_write_file`).
 
+Set `enabled` to `false` to keep a server in config without connecting it or registering its tools. Omit `enabled`, or set it to `true`, to connect the server. The same switch is available in **Apps → MCP** and from any chat with `/mcp enable <name>` or `/mcp disable <name>`. Disabling does not delete the server or its saved OAuth credentials. Removing it does.
+
+```json
+{
+  "tools": {
+    "mcpServers": {
+      "filesystem": {
+        "enabled": false,
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+      }
+    }
+  }
+}
+```
+
+While the gateway is running, nanobot reloads MCP servers after `config.json` changes. The WebUI Apps page also checks servers that were already connected and shows **Fix connection** when one stops responding.
+
 - Omit `enabledTools`, or set it to `["*"]`, to register all capabilities (tools, resources, and prompts).
 - Set `enabledTools` to `[]` to register no tools from that server. Resources and prompts are also skipped, since they have no per-name filter.
 - Set `enabledTools` to a non-empty list of names to register only those tools — resources and prompts are not registered.

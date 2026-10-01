@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import time
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import AsyncExitStack, suppress
@@ -58,6 +59,9 @@ _SANITIZE_RE = re.compile(r"_+")
 _ReconnectCallback = Callable[[str, str, Tool], Awaitable[Tool | None]]
 MCPServerLoader = Callable[[], Mapping[str, "MCPServerConfig"]]
 MCPRuntimeStatus = Literal["connecting", "connected", "failed"]
+_HEALTH_CACHE_SECONDS = 4.0
+_HEALTH_PING_TIMEOUT_SECONDS = 2.0
+_active_provider: "MCPProvider | None" = None
 
 
 class MCPConnection(Protocol):
@@ -1341,13 +1345,83 @@ def session_extra(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     return {"mcp_presets": mcp_presets} if isinstance(mcp_presets, list) and mcp_presets else {}
 
 
+def enabled_mcp_servers(
+    servers: Mapping[str, MCPServerConfig],
+) -> dict[str, MCPServerConfig]:
+    """Return servers that should connect and register tools."""
+    return {name: cfg for name, cfg in servers.items() if cfg.enabled}
+
+
+def bind_mcp_provider(provider: "MCPProvider | None") -> None:
+    """Publish the live gateway provider for WebUI health checks and /mcp."""
+    global _active_provider
+    _active_provider = provider
+
+
+def active_mcp_provider() -> "MCPProvider | None":
+    return _active_provider
+
+
+async def probe_active_mcp_provider() -> dict[str, MCPRuntimeStatus] | None:
+    """Refresh liveness for the bound provider, if this process owns one."""
+    provider = _active_provider
+    if provider is None:
+        return None
+    try:
+        return await provider.check_health()
+    except Exception:
+        logger.warning("MCP health check failed")
+        return provider.runtime_status()
+
+
+async def reload_active_mcp_provider() -> dict[str, Any] | None:
+    """Apply config changes to the bound provider, if this process owns one."""
+    provider = _active_provider
+    if provider is None:
+        return None
+    return await provider.reload()
+
+
 def _configured_servers(config: Config) -> dict[str, MCPServerConfig]:
     from nanobot.agent.plugins import agent_plugin_mcp_servers
 
-    return agent_plugin_mcp_servers(
+    return enabled_mcp_servers(agent_plugin_mcp_servers(
         config.workspace_path,
         config.tools.mcp_servers,
-    )
+    ))
+
+
+def _connection_owner_done(connection: MCPConnection) -> bool | None:
+    owner = getattr(connection, "_owner", None)
+    if isinstance(owner, asyncio.Task):
+        return owner.done()
+    return None
+
+
+async def _session_responsive(session: Any) -> bool | None:
+    """Return True/False when a ping settles, or None when the result is inconclusive."""
+    ping = getattr(session, "send_ping", None)
+    if not callable(ping):
+        return None
+    try:
+        ping_result = ping()
+        if not hasattr(ping_result, "__await__"):
+            return None
+        await asyncio.wait_for(
+            cast(Awaitable[object], ping_result),
+            timeout=_HEALTH_PING_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        return None
+    except asyncio.CancelledError:
+        if task_is_cancelling():
+            raise
+        return False
+    except Exception as exc:
+        if _is_session_terminated(exc) or _is_transient(exc):
+            return False
+        return None
+    return True
 
 
 def _load_current_servers() -> dict[str, MCPServerConfig]:
@@ -1366,13 +1440,16 @@ class MCPProvider:
         *,
         server_loader: MCPServerLoader | None = None,
     ) -> None:
-        self._servers = dict(servers)
+        self._servers = enabled_mcp_servers(servers)
         self._registry = registry
         self._server_loader = server_loader or _load_current_servers
         self._connections: dict[str, MCPConnection] = {}
         self._runtime_statuses: dict[str, MCPRuntimeStatus] = {}
         self._lock = asyncio.Lock()
         self._closing = False
+        self._last_health_at = 0.0
+        self._health_skipped = False
+        self._health_task: asyncio.Task[dict[str, MCPRuntimeStatus]] | None = None
 
     @classmethod
     def from_config(
@@ -1403,6 +1480,95 @@ class MCPProvider:
             for name, status in self._runtime_statuses.items()
             if name in self._servers
         }
+
+    async def check_health(self, *, force: bool = False) -> dict[str, MCPRuntimeStatus]:
+        """Mark connected servers failed when their transport has died.
+
+        A server that was connected and later exits, or whose session ping
+        reports a dead connection, stays failed until the next successful
+        connect or reload. Slow pings are inconclusive so a busy server is
+        not disconnected.
+        """
+        now = time.monotonic()
+        if not force and now - self._last_health_at < _HEALTH_CACHE_SECONDS:
+            return self.runtime_status()
+        task = self._health_task
+        if task is not None and not task.done():
+            return await task
+        task = asyncio.create_task(self._run_health_check(), name="mcp-health-check")
+        self._health_task = task
+        try:
+            return await task
+        finally:
+            if not self._health_skipped:
+                self._last_health_at = time.monotonic()
+
+    async def _run_health_check(self) -> dict[str, MCPRuntimeStatus]:
+        self._health_skipped = False
+        if self._closing or not self._connections:
+            return self.runtime_status()
+        if self._lock.locked():
+            self._health_skipped = True
+            return self.runtime_status()
+        async with self._lock:
+            if self._closing:
+                return self.runtime_status()
+            probes = [
+                (name, connection, self._session_for(name), _connection_owner_done(connection))
+                for name, connection in self._connections.items()
+            ]
+
+        async def _probe(
+            name: str,
+            connection: MCPConnection,
+            session: Any | None,
+            owner_done: bool | None,
+        ) -> tuple[str, MCPConnection] | None:
+            if owner_done is True:
+                return name, connection
+            if session is None:
+                return None
+            alive = await _session_responsive(session)
+            if alive is False:
+                alive = await _session_responsive(session)
+            if alive is False:
+                return name, connection
+            return None
+
+        probed = await asyncio.gather(
+            *(_probe(name, connection, session, owner_done) for name, connection, session, owner_done in probes)
+        )
+        dead = [item for item in probed if item is not None]
+        if not dead:
+            return self.runtime_status()
+
+        async with self._lock:
+            if self._closing:
+                return self.runtime_status()
+            for name, connection in dead:
+                if self._connections.get(name) is not connection:
+                    continue
+                logger.warning("MCP server '{}' stopped responding", name)
+                _unregister_server_tools(self._registry, name)
+                self._set_runtime_status({name}, "failed")
+                try:
+                    await self._close_server(name)
+                except asyncio.CancelledError:
+                    if task_is_cancelling():
+                        raise
+                except Exception:
+                    logger.debug("MCP server '{}' cleanup after health failure was ignored", name)
+        return self.runtime_status()
+
+    def _session_for(self, server_name: str) -> Any | None:
+        for tool_name in self._registry.tool_names:
+            tool = self._registry.get(tool_name)
+            if getattr(tool, "_server_name", None) != server_name:
+                continue
+            session = getattr(tool, "_session", None)
+            if session is not None:
+                return session
+        return None
 
     def _set_runtime_status(
         self,
@@ -1492,7 +1658,7 @@ class MCPProvider:
             if self._closing:
                 return self._closing_result()
             try:
-                next_servers = dict(self._server_loader())
+                next_servers = enabled_mcp_servers(dict(self._server_loader()))
             except Exception as exc:
                 logger.warning("MCP hot reload could not read config: {}", exc)
                 return {

@@ -549,6 +549,7 @@ interface InstalledSettingItemsOptions<Payload, Item> {
   fetchPayload: (token: string) => Promise<Payload>;
   isPayload: (value: unknown) => value is Payload;
   selectItems: (payload: Payload) => Item[];
+  refreshIntervalMs?: number;
 }
 
 function useInstalledSettingItems<Payload, Item>({
@@ -558,6 +559,7 @@ function useInstalledSettingItems<Payload, Item>({
   fetchPayload,
   isPayload,
   selectItems,
+  refreshIntervalMs = 0,
 }: InstalledSettingItemsOptions<Payload, Item>): Item[] {
   const [items, setItems] = useState<Item[]>([]);
   const loadedRef = useRef(false);
@@ -601,6 +603,12 @@ function useInstalledSettingItems<Payload, Item>({
       });
     };
     if (requestCount && !loadedRef.current) void refresh();
+    const interval = refreshIntervalMs > 0
+      ? window.setInterval(() => {
+        if (!requestCount || document.visibilityState === "hidden") return;
+        void refresh();
+      }, refreshIntervalMs)
+      : null;
 
     const refreshOnChanged = (event: Event) => {
       const payload = (event as CustomEvent<unknown>).detail;
@@ -620,9 +628,10 @@ function useInstalledSettingItems<Payload, Item>({
     window.addEventListener(eventName, refreshOnChanged);
     return () => {
       cancelled = true;
+      if (interval !== null) window.clearInterval(interval);
       window.removeEventListener(eventName, refreshOnChanged);
     };
-  }, [requestCount, eventName, fetchPayload, getToken, isPayload, selectItems]);
+  }, [requestCount, eventName, fetchPayload, getToken, isPayload, refreshIntervalMs, selectItems]);
 
   return items;
 }
@@ -724,6 +733,7 @@ export function ThreadShell({
     fetchPayload: fetchMcpPresets,
     isPayload: isMcpPresetsPayload,
     selectItems: installedMcpPresetsFromPayload,
+    refreshIntervalMs: 8_000,
   });
   const [settings, setSettings] = useState<SettingsPayload | null>(settingsSnapshot);
   const [modelFallback, setModelFallback] = useState<{

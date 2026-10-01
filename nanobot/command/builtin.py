@@ -175,6 +175,14 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "wrench",
     ),
     BuiltinCommandSpec(
+        "/mcp",
+        "Manage MCP servers",
+        "List MCP servers, or enable and disable one without removing it.",
+        "server",
+        "[enable|disable <name>]",
+        accepts_args=True,
+    ),
+    BuiltinCommandSpec(
         "/help",
         "Show help",
         "List available slash commands.",
@@ -951,6 +959,18 @@ async def cmd_pairing(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+async def cmd_mcp(ctx: CommandContext) -> OutboundMessage:
+    """List MCP servers or enable/disable one from any chat channel."""
+    from nanobot.webui.mcp_presets_api import mcp_channel_command
+
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=await mcp_channel_command(ctx.args),
+        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+    )
+
+
 async def cmd_skill(ctx: CommandContext) -> OutboundMessage:
     """List all enabled skills (name and description only)."""
     loop = ctx.loop
@@ -1090,6 +1110,8 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/evaluator-prompt", cmd_evaluator_prompt)
     router.prefix("/evaluator-prompt ", cmd_evaluator_prompt)
     router.exact("/skill", cmd_skill)
+    router.exact("/mcp", cmd_mcp)
+    router.prefix("/mcp ", cmd_mcp)
     router.exact("/help", cmd_help)
     router.exact("/pairing", cmd_pairing)
     router.prefix("/pairing ", cmd_pairing)

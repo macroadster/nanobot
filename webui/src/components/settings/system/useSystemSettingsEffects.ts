@@ -13,6 +13,8 @@ import {
   fetchMcpPresets,
   fetchNanobotFeatures,
 } from "@/lib/api";
+import { notifyMcpPresetsChanged } from "@/lib/mcp-preset-events";
+import type { McpPresetsPayload } from "@/lib/types";
 
 interface SystemSettingsEffectsOptions {
   state: SystemSettingsState;
@@ -22,6 +24,17 @@ interface SystemSettingsEffectsOptions {
 }
 
 const MCP_RUNTIME_STATUS_REFRESH_MS = 1_000;
+const MCP_HEALTH_REFRESH_MS = 5_000;
+
+function mcpCatalogSignature(payload: McpPresetsPayload): string {
+  return payload.presets.map((preset) => [
+    preset.name,
+    preset.enabled === false ? "0" : "1",
+    preset.runtime_status ?? "",
+    preset.status,
+    preset.installed ? "1" : "0",
+  ].join(":")).join("|");
+}
 
 export function useSystemSettingsEffects({
   state,
@@ -154,6 +167,7 @@ export function useSystemSettingsEffects({
     if (activeSection !== "apps" || !pageVisible) return;
     let cancelled = false;
     let retry: number | null = null;
+    let lastSignature: string | null = null;
     const loadMcpPresets = (showLoading: boolean) => {
       if (showLoading) setMcpPresetsLoading(true);
       fetchMcpPresets(getToken())
@@ -161,12 +175,18 @@ export function useSystemSettingsEffects({
           if (cancelled) return;
           setMcpPresets(payload);
           setMcpError(null);
-          if (payload.presets.some((preset) => preset.runtime_status === "connecting")) {
-            retry = window.setTimeout(() => {
-              retry = null;
-              loadMcpPresets(false);
-            }, MCP_RUNTIME_STATUS_REFRESH_MS);
+          const signature = mcpCatalogSignature(payload);
+          if (lastSignature !== null && lastSignature !== signature) {
+            notifyMcpPresetsChanged(payload);
           }
+          lastSignature = signature;
+          const refreshMs = payload.presets.some((preset) => preset.runtime_status === "connecting")
+            ? MCP_RUNTIME_STATUS_REFRESH_MS
+            : MCP_HEALTH_REFRESH_MS;
+          retry = window.setTimeout(() => {
+            retry = null;
+            loadMcpPresets(false);
+          }, refreshMs);
         })
         .catch((err) => {
           if (!cancelled) setMcpError((err as Error).message);

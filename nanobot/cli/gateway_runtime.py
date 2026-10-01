@@ -15,7 +15,7 @@ from nanobot import __logo__, __version__
 from nanobot.agent.hook import AgentHook, AgentRunHookContext
 from nanobot.agent.hooks import create_file_edit_activity_hook
 from nanobot.agent.loop import AgentLoop
-from nanobot.agent.tools.mcp import MCPProvider
+from nanobot.agent.tools.mcp import MCPProvider, bind_mcp_provider
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.cli import terminal as cli_terminal
 from nanobot.cli.runtime_config import _migrate_cron_store
@@ -913,6 +913,7 @@ def _run_gateway(
             console.print,
         )
         try:
+            bind_mcp_provider(mcp_provider)
             await cron.start()
             # Re-read once on first admission to close the watcher subscription window.
             agent.runtime_resolver.invalidate()
@@ -935,11 +936,31 @@ def _run_gateway(
                 if orphaned:
                     logger.info("Last local client disappeared; stopping on-demand gateway")
 
+            async def _reload_mcp_after_config_change() -> None:
+                try:
+                    from nanobot.config.loader import load_config
+
+                    fresh = load_config(Path(config_path))
+                    agent.tools_config.mcp_servers = dict(fresh.tools.mcp_servers)
+                except Exception:
+                    logger.exception("Could not refresh MCP server config from disk")
+                try:
+                    await mcp_provider.reload()
+                except Exception:
+                    logger.exception("MCP reload after config change failed")
+
+            def _on_config_change() -> None:
+                agent.invalidate_runtime_config()
+                asyncio.get_running_loop().create_task(
+                    _reload_mcp_after_config_change(),
+                    name="nanobot-mcp-config-reload",
+                )
+
             tasks = [
                 asyncio.create_task(
                     watch_config_file(
                         Path(config_path),
-                        lambda: agent.invalidate_runtime_config(),
+                        _on_config_change,
                     ),
                     name="nanobot-config-watcher",
                 ),
@@ -1030,6 +1051,7 @@ def _run_gateway(
                     logger.info("Shutdown: flushed {} session(s) to disk", flushed)
             finally:
                 restore_shutdown_handlers()
+                bind_mcp_provider(None)
 
     with (
         gateway_runtime.foreground_instance(gateway_start_options),

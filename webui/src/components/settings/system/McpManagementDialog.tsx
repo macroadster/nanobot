@@ -3,6 +3,7 @@ import {
   Check,
   ExternalLink,
   Loader2,
+  PauseCircle,
   RotateCcw,
   Search,
   Server,
@@ -72,10 +73,12 @@ export function McpManagementDialog({
   const reconnectBusy = actionKey === `reconnect:${preset.name}`;
   const removeBusy = actionKey === `remove:${preset.name}`;
   const enableBusy = actionKey === `enable:${preset.name}`;
+  const disableBusy = actionKey === `disable:${preset.name}`;
   const toolsBusy = actionKey === `tools:${preset.name}`;
   const oauthBusy = actionKey === `oauth:${preset.name}`;
-  const busy = testBusy || reconnectBusy || removeBusy || enableBusy || toolsBusy || oauthBusy;
-  const configuredInstalled = preset.installed && preset.configured;
+  const busy = testBusy || reconnectBusy || removeBusy || enableBusy || disableBusy || toolsBusy || oauthBusy;
+  const serverEnabled = preset.enabled !== false;
+  const configuredInstalled = preset.installed && preset.configured && serverEnabled;
   const isOAuth = preset.auth === "oauth";
   const inspectionRequestedRef = useRef(false);
   const allowAllTools = draftEnabledTools.includes("*");
@@ -233,6 +236,8 @@ export function McpManagementDialog({
               requiredFieldsComplete={requiredFieldsComplete}
               onFieldChange={onFieldChange}
               onConnect={connect}
+              onDisable={() => onAction("disable", preset.name)}
+              onEnable={() => onAction("enable", preset.name, values)}
               onRemove={() => {
                 onOpenChange(false);
                 onAction("remove", preset.name);
@@ -495,6 +500,8 @@ function ConnectionPanel({
   requiredFieldsComplete,
   onFieldChange,
   onConnect,
+  onDisable,
+  onEnable,
   onRemove,
 }: {
   preset: McpPresetInfo;
@@ -505,11 +512,14 @@ function ConnectionPanel({
   requiredFieldsComplete: boolean;
   onFieldChange: (presetName: string, fieldName: string, value: string) => void;
   onConnect: () => void;
+  onDisable: () => void;
+  onEnable: () => void;
   onRemove: () => void;
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  const configuredInstalled = preset.installed && preset.configured;
+  const serverEnabled = preset.enabled !== false;
+  const configuredInstalled = preset.installed && preset.configured && serverEnabled;
   const hasFields = preset.required_fields.length > 0;
   const authentication = preset.auth === "oauth"
     ? "OAuth"
@@ -635,8 +645,32 @@ function ConnectionPanel({
         </div>
       ) : null}
 
-      {preset.installed && preset.enabled === undefined ? (
-        <section className="pt-1">
+      {preset.installed ? (
+        <section className="flex flex-wrap items-center gap-2 pt-1">
+          {serverEnabled ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={onDisable}
+              className="h-9 rounded-full px-3 text-[12.5px] font-semibold"
+            >
+              <PauseCircle className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+              {tx("settings.mcp.disable", "Disable")}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={onEnable}
+              className="h-9 rounded-full px-3 text-[12.5px] font-semibold"
+            >
+              {tx("settings.mcp.enable", "Enable")}
+            </Button>
+          )}
           <Button
             type="button"
             size="sm"

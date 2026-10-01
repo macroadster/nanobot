@@ -961,6 +961,8 @@
       "remove": "削除",
       "enable": "有効化",
       "enabled": "有効",
+      "disable": "無効化",
+      "disabled": "無効",
       "setup": "接続",
       "configure": "接続",
       "reconnect": "再接続",

@@ -961,6 +961,8 @@
       "remove": "移除",
       "enable": "啟用",
       "enabled": "已啟用",
+      "disable": "停用",
+      "disabled": "已停用",
       "setup": "連線",
       "configure": "連線",
       "reconnect": "重新連線",

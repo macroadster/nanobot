@@ -222,6 +222,20 @@ if DISCORD_AVAILABLE:
                 command_text = f"/model {preset}" if preset else "/model"
                 await self._forward_slash_command(interaction, command_text)
 
+            @self.tree.command(name="mcp", description="List, enable, or disable MCP servers")
+            @app_commands.describe(
+                action="enable or disable; omit to list servers",
+                name="MCP server name",
+            )
+            async def mcp_command(
+                interaction: discord.Interaction,
+                action: str | None = None,
+                name: str | None = None,
+            ) -> None:
+                parts = [part.strip() for part in (action, name) if part and part.strip()]
+                command_text = f"/mcp {' '.join(parts)}" if parts else "/mcp"
+                await self._forward_slash_command(interaction, command_text)
+
             @self.tree.command(name="trigger", description="Create a named local trigger for this chat")
             @app_commands.describe(name="Trigger name")
             async def trigger_command(

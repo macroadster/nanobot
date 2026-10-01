@@ -961,6 +961,8 @@
       "remove": "Hapus",
       "enable": "Aktifkan",
       "enabled": "Aktif",
+      "disable": "Nonaktifkan",
+      "disabled": "Nonaktif",
       "setup": "Hubungkan",
       "configure": "Hubungkan",
       "reconnect": "Hubungkan kembali",

@@ -281,6 +281,90 @@ describe("SettingsView Apps catalog", () => {
     expect(await screen.findByRole("heading", { name: "Xmind" })).toBeInTheDocument();
   });
 
+  it("enables a disabled MCP server without treating it as a failed connection", async () => {
+    const disabled = {
+      ...xmindMcpPreset,
+      installed: true,
+      configured: true,
+      enabled: false,
+      available: false,
+      status: "configured",
+      runtime_status: "failed",
+      connection_summary: "https://app.xmind.com/api/mcp",
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return jsonResponse(settingsPayload());
+      if (url === "/api/settings/cli-apps") {
+        return jsonResponse({ apps: [], installed_count: 0 });
+      }
+      if (url === "/api/settings/mcp-presets") {
+        return jsonResponse({ presets: [disabled], installed_count: 1 });
+      }
+      return { ok: false, status: 404, text: async () => "Not found" } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    requestMutationMock.mockResolvedValueOnce({
+      presets: [{ ...disabled, enabled: true, available: true, runtime_status: "connecting" }],
+      installed_count: 1,
+      requires_restart: false,
+      last_action: { ok: true, message: "Enabled MCP preset for Xmind." },
+    });
+
+    renderSettingsView({ initialSection: "apps" });
+    fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
+
+    expect(await screen.findByText("Disabled")).toBeInTheDocument();
+    expect(screen.queryByText("Connection failed.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+
+    await waitFor(() => expect(requestMutationMock).toHaveBeenCalledWith(
+      "settings.mcp.enable",
+      { name: "xmind" },
+      20_000,
+    ));
+  });
+
+  it("shows a connected MCP server as failed after a later health check", async () => {
+    const server = {
+      ...xmindMcpPreset,
+      installed: true,
+      configured: true,
+      enabled: true,
+      available: true,
+      status: "configured",
+      connection_summary: "https://app.xmind.com/api/mcp",
+    };
+    let mcpPresetRequests = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return jsonResponse(settingsPayload());
+      if (url === "/api/settings/cli-apps") {
+        return jsonResponse({ apps: [], installed_count: 0 });
+      }
+      if (url === "/api/settings/mcp-presets") {
+        mcpPresetRequests += 1;
+        return jsonResponse({
+          presets: [{
+            ...server,
+            runtime_status: mcpPresetRequests === 1 ? "connected" : "failed",
+          }],
+          installed_count: 1,
+        });
+      }
+      return { ok: false, status: 404, text: async () => "Not found" } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSettingsView({ initialSection: "apps" });
+    fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
+
+    expect(await screen.findByRole("button", { name: "Manage Xmind" })).toHaveTextContent("Manage");
+    expect(await screen.findByText("Connection failed.", {}, { timeout: 7_000 })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Manage Xmind" })).toHaveTextContent("Fix connection");
+    expect(mcpPresetRequests).toBeGreaterThanOrEqual(2);
+  }, 12_000);
+
   it("retries a failed custom MCP and only shows a success check after it connects", async () => {
     const failedCustom = {
       ...xmindMcpPreset,

@@ -81,6 +81,8 @@ describe("McpManagementDialog", () => {
     expect(within(dialog).queryByText("Connection actions apply immediately.")).not.toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Reconnect" }));
     expect(onAction).toHaveBeenCalledWith("reconnect", "docs", {});
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disable" }));
+    expect(onAction).toHaveBeenCalledWith("disable", "docs");
   });
 
   it("loads tools on entry and replaces passive inspection copy with recovery", async () => {

@@ -15,6 +15,7 @@ from nanobot.config.schema import Config
 from nanobot.webui.mcp_presets_api import (
     McpPresetError,
     custom_mcp_action,
+    mcp_channel_command,
     mcp_presets_action,
     mcp_presets_payload,
     mcp_presets_settings_action,
@@ -760,3 +761,64 @@ def test_normalize_mcp_mentions_uses_explicit_gateway_config(
     )
 
     assert payload == [{"name": "gateway-docs", "display_name": "Gateway docs"}]
+
+
+@pytest.mark.asyncio
+async def test_disable_keeps_mcp_server_config_and_hides_stale_runtime_status(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_config(tmp_path, monkeypatch)
+    custom_mcp_action(
+        "custom",
+        {
+            "name": ["docs"],
+            "transport": ["streamableHttp"],
+            "url": ["https://mcp.example.com/mcp"],
+        },
+    )
+
+    listed = await mcp_channel_command("")
+    assert "- docs: enabled" in listed
+
+    disabled = await mcp_channel_command("disable docs")
+
+    assert "Disabled MCP server docs." in disabled
+    assert "Restart nanobot to apply it." in disabled
+    saved = load_config().tools.mcp_servers["docs"]
+    assert saved.enabled is False
+    assert saved.url == "https://mcp.example.com/mcp"
+    hidden = mcp_presets_payload(runtime_status={"docs": "failed"})
+    row = next(item for item in hidden["presets"] if item["name"] == "docs")
+    assert row["enabled"] is False
+    assert row["available"] is False
+    assert "runtime_status" not in row
+
+    enabled = await mcp_channel_command("enable Docs")
+
+    assert "Enabled MCP server docs." in enabled
+    assert load_config().tools.mcp_servers["docs"].enabled is True
+    restored = mcp_presets_payload(runtime_status={"docs": "connected"})
+    row = next(item for item in restored["presets"] if item["name"] == "docs")
+    assert row["enabled"] is True
+    assert row["runtime_status"] == "connected"
+
+
+def test_import_can_disable_an_mcp_server(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _use_config(tmp_path, monkeypatch)
+
+    custom_mcp_action(
+        "import",
+        {
+            "config": [
+                '{"mcpServers":{"docs":{"command":"npx","args":["-y","docs-mcp"],"enabled":false}}}'
+            ],
+        },
+    )
+
+    saved = load_config().tools.mcp_servers["docs"]
+    assert saved.enabled is False
+    assert saved.command == "npx"
+    row = next(item for item in mcp_presets_payload()["presets"] if item["name"] == "docs")
+    assert row["enabled"] is False
+    assert row["installed"] is True

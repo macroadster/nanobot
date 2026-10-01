@@ -752,6 +752,8 @@
       "remove": "Remover",
       "enable": "Habilitar",
       "enabled": "Habilitado",
+      "disable": "Desativar",
+      "disabled": "Desativado",
       "setup": "Conectar",
       "configure": "Conectar",
       "reconnect": "Reconectar",

@@ -961,6 +961,8 @@
       "remove": "Eliminar",
       "enable": "Habilitar",
       "enabled": "Habilitado",
+      "disable": "Desactivar",
+      "disabled": "Desactivado",
       "setup": "Conectar",
       "configure": "Conectar",
       "reconnect": "Reconectar",
