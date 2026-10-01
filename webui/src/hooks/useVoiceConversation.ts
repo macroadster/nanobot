@@ -77,7 +77,10 @@ const DEFAULT_TIMINGS: VoiceTimings = {
 };
 
 const ECHO_FLOOR_BLOCK = 0.35;
-const INITIAL_SPEECH_THRESHOLD = 0.055;
+// Room tone with noise suppression still sits well above digital silence.
+// A gate below that never observes a pause, so the utterance never closes.
+const MIN_SPEECH_GATE = 0.2;
+const MAX_SPEECH_GATE = 0.62;
 
 let timings: VoiceTimings = { ...DEFAULT_TIMINGS };
 let phase: VoiceConversationPhase = "idle";
@@ -96,8 +99,11 @@ let silenceMs = 0;
 let speechRunMs = 0;
 let lastTick = 0;
 let lastElapsedPublish = 0;
-let speechThreshold = INITIAL_SPEECH_THRESHOLD;
 let noiseFloor = 0;
+let noiseReady = false;
+let speechPeak = 0;
+let endAfterUtterance = false;
+let monitorContext: AudioContext | null = null;
 let outputPlaying = false;
 let playbackStartedAt = 0;
 let playbackFloor = 0;
@@ -168,17 +174,26 @@ export function isVoiceConversationActive(): boolean {
 export function toggleVoiceConversation(): void {
   if (isVoiceConversationActive()) {
     if (starting || phase === "arming") return;
+    if (phase === "capturing" || phase === "transcribing" || phase === "sending") {
+      endAfterUtterance = true;
+      if (phase === "capturing") endCapture();
+      return;
+    }
     stopVoiceConversation();
     return;
   }
   const options = readOptions?.();
   if (!options?.onTranscribeAudio || options.disabled) return;
-  // play() has to run inside this click. Waiting for the microphone consumes the gesture.
+  // Playback and the analyser both have to be unlocked inside this click.
+  // The microphone prompt is async, and a context created after it stays suspended,
+  // which freezes the level meter and never closes an utterance.
   armVoiceOutput();
+  prepareMonitorContext();
   void startVoiceConversation();
 }
 
 export function stopVoiceConversation(): void {
+  endAfterUtterance = false;
   sessionGeneration += 1;
   starting = false;
   pendingUtterance = null;
@@ -195,6 +210,7 @@ export function stopVoiceConversation(): void {
     }
   }
   releaseMonitor();
+  closeMonitorContext();
   stream?.getTracks().forEach((track) => track.stop());
   stream = null;
   outputPlaying = false;
@@ -262,11 +278,13 @@ async function startVoiceConversation(): Promise<void> {
   const options = readOptions?.();
   if (!options?.onTranscribeAudio || options.disabled) {
     disarmVoiceOutput();
+    closeMonitorContext();
     return;
   }
   options.onClearError();
   if (window.isSecureContext === false) {
     disarmVoiceOutput();
+    closeMonitorContext();
     options.onError("insecureContext");
     return;
   }
@@ -274,6 +292,7 @@ async function startVoiceConversation(): Promise<void> {
   const MediaRecorderCtor = mediaRecorderConstructor();
   if (!mediaDevices?.getUserMedia || !MediaRecorderCtor) {
     disarmVoiceOutput();
+    closeMonitorContext();
     options.onError("unsupported");
     return;
   }
@@ -298,17 +317,39 @@ async function startVoiceConversation(): Promise<void> {
     starting = false;
     stream = null;
     disarmVoiceOutput();
+    closeMonitorContext();
     setPhase("idle");
     readOptions?.().onError(recordingErrorKey(error));
   }
 }
 
-function startMonitor(nextStream: MediaStream): boolean {
+function prepareMonitorContext(): void {
   const AudioContextCtor = audioContextConstructor();
-  if (!AudioContextCtor) return false;
+  if (!AudioContextCtor) return;
+  if (!monitorContext || monitorContext.state === "closed") {
+    try {
+      monitorContext = new AudioContextCtor();
+    } catch {
+      monitorContext = null;
+      return;
+    }
+  }
+  void monitorContext.resume().catch(() => undefined);
+}
+
+function closeMonitorContext(): void {
+  const context = monitorContext;
+  monitorContext = null;
+  if (!context || context.state === "closed") return;
+  void context.close().catch(() => undefined);
+}
+
+function startMonitor(nextStream: MediaStream): boolean {
+  const context = monitorContext;
+  if (!context || context.state === "closed") return false;
   releaseMonitor();
   try {
-    const context = new AudioContextCtor();
+    void context.resume().catch(() => undefined);
     const source = context.createMediaStreamSource(nextStream);
     const analyser = context.createAnalyser();
     analyser.fftSize = 256;
@@ -357,11 +398,20 @@ function observeLevel(level: number, now: number): void {
   if (phase === "transcribing" || phase === "sending" || phase === "arming") return;
 
   if (phase === "capturing") {
-    if (level >= speechThreshold) {
+    speechPeak = Math.max(speechPeak, level);
+    const gate = speechGate();
+    const quiet = Math.min(
+      gate * 0.92,
+      Math.max(noiseFloor * 1.5 + 0.03, speechPeak * 0.5),
+    );
+    if (level >= gate) {
       speechMs += dt;
       silenceMs = 0;
-    } else {
+    } else if (level < quiet) {
       silenceMs += dt;
+      noteNoise(level);
+    } else {
+      silenceMs += dt * 0.35;
     }
     const elapsed = now - captureStartedAt;
     if (now - lastElapsedPublish >= 200) {
@@ -390,14 +440,13 @@ function observeLevel(level: number, now: number): void {
       speechRunMs = 0;
       return;
     }
-  } else if (level < speechThreshold) {
-    noiseFloor = noiseFloor * 0.92 + level * 0.08;
-    speechThreshold = clamp(noiseFloor * 3 + 0.04, INITIAL_SPEECH_THRESHOLD, 0.16);
+  } else {
+    noteNoise(level);
   }
 
   const threshold = echoing
     ? clamp(Math.max(0.2, playbackFloor * 1.75 + 0.06), 0.2, 0.72)
-    : speechThreshold;
+    : speechGate();
   const needed = echoing ? timings.interruptStartMs : timings.speechStartMs;
   if (level >= threshold) speechRunMs += dt;
   else speechRunMs = 0;
@@ -431,6 +480,7 @@ function beginCapture(now: number, leadingSpeech: number): void {
   captureStartedAt = now - leadingSpeech;
   speechMs = leadingSpeech;
   silenceMs = 0;
+  speechPeak = 0;
   lastElapsedPublish = now;
   elapsedLabel = formatVoiceElapsed(leadingSpeech);
   recorder = nextRecorder;
@@ -474,34 +524,41 @@ async function finishCapture(
   mimeType: string,
   generation: number,
 ): Promise<void> {
-  if (!stream || generation !== sessionGeneration) return;
-  if (recorded.length === 0 || spokenMs < timings.minSpeechMs) {
-    resumeAfterUtterance();
-    return;
-  }
-  const options = readOptions?.();
-  if (!options?.onTranscribeAudio) {
-    resumeAfterUtterance();
-    return;
-  }
-  setPhase("transcribing");
   try {
-    const blob = new Blob(recorded, { type: mimeType });
-    const dataUrl = options.wantsWav
-      ? await convertBlobToWav(blob)
-      : await blobToDataUrl(blob);
     if (!stream || generation !== sessionGeneration) return;
-    const text = (await options.onTranscribeAudio(dataUrl, { durationMs })).trim();
-    if (!stream || generation !== sessionGeneration) return;
-    if (!text) {
+    if (recorded.length === 0 || spokenMs < timings.minSpeechMs) {
       resumeAfterUtterance();
       return;
     }
-    await deliverUtterance(text, generation);
-  } catch (error) {
-    if (!stream || generation !== sessionGeneration) return;
-    readOptions?.().onError(transcriptionErrorKey(error));
-    setPhase("listening");
+    const options = readOptions?.();
+    if (!options?.onTranscribeAudio) {
+      resumeAfterUtterance();
+      return;
+    }
+    setPhase("transcribing");
+    try {
+      const blob = new Blob(recorded, { type: mimeType });
+      const dataUrl = options.wantsWav
+        ? await convertBlobToWav(blob)
+        : await blobToDataUrl(blob);
+      if (!stream || generation !== sessionGeneration) return;
+      const text = (await options.onTranscribeAudio(dataUrl, { durationMs })).trim();
+      if (!stream || generation !== sessionGeneration) return;
+      if (!text) {
+        resumeAfterUtterance();
+        return;
+      }
+      await deliverUtterance(text, generation);
+    } catch (error) {
+      if (!stream || generation !== sessionGeneration) return;
+      readOptions?.().onError(transcriptionErrorKey(error));
+      setPhase("listening");
+    }
+  } finally {
+    if (endAfterUtterance && generation === sessionGeneration) {
+      endAfterUtterance = false;
+      stopVoiceConversation();
+    }
   }
 }
 
@@ -561,7 +618,25 @@ function releaseMonitor(): void {
   if (current.frame !== null) cancelAnimationFrame(current.frame);
   current.source.disconnect();
   current.analyser.disconnect();
-  void current.context.close().catch(() => undefined);
+}
+
+function noteNoise(level: number): void {
+  if (!noiseReady) {
+    noiseFloor = Math.min(level, MIN_SPEECH_GATE);
+    noiseReady = true;
+    return;
+  }
+  if (level < noiseFloor) {
+    noiseFloor = noiseFloor * 0.45 + level * 0.55;
+    return;
+  }
+  if (level < speechGate()) {
+    noiseFloor = noiseFloor * 0.92 + level * 0.08;
+  }
+}
+
+function speechGate(): number {
+  return clamp(Math.max(noiseFloor * 1.75 + 0.05, MIN_SPEECH_GATE), MIN_SPEECH_GATE, MAX_SPEECH_GATE);
 }
 
 function resetDetectors(): void {
@@ -574,8 +649,9 @@ function resetDetectors(): void {
   speechRunMs = 0;
   lastTick = 0;
   lastElapsedPublish = 0;
-  speechThreshold = INITIAL_SPEECH_THRESHOLD;
   noiseFloor = 0;
+  noiseReady = false;
+  speechPeak = 0;
   playbackFloor = 0;
   bargeInEvaluated = false;
   bargeInBlocked = false;

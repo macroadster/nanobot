@@ -100,8 +100,11 @@ export async function convertBlobToWav(blob: Blob): Promise<string> {
   const arrayBuffer = await blob.arrayBuffer();
   const ctx = new AudioCtx();
   try {
-    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
     return blobToDataUrl(audioBufferToWav(audioBuffer));
+  } catch {
+    // Some browsers cannot decode their own MediaRecorder output. Send it as recorded.
+    return blobToDataUrl(blob);
   } finally {
     void ctx.close();
   }
