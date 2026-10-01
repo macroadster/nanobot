@@ -231,7 +231,10 @@ function rect(init: Partial<DOMRect>): DOMRect {
   };
 }
 
-function mockVoiceRecorder(blob = new Blob(["voice"], { type: "audio/webm" })) {
+function mockVoiceRecorder(
+  blob = new Blob(["voice"], { type: "audio/webm" }),
+  options?: { blobTiming?: "before-stop" | "after-stop" | "never" },
+) {
   const stopTrack = vi.fn();
   const getUserMedia = vi.fn(async () => ({
     getTracks: () => [{ stop: stopTrack }],
@@ -255,6 +258,19 @@ function mockVoiceRecorder(blob = new Blob(["voice"], { type: "audio/webm" })) {
 
     stop() {
       this.state = "inactive";
+      const timing = options?.blobTiming ?? "before-stop";
+      if (timing === "never") {
+        this.onstop?.();
+        return;
+      }
+      if (timing === "after-stop") {
+        // Safari delivers the only blob after the stop event.
+        this.onstop?.();
+        setTimeout(() => {
+          this.ondataavailable?.({ data: blob } as BlobEvent);
+        }, 0);
+        return;
+      }
       this.ondataavailable?.({ data: blob } as BlobEvent);
       this.onstop?.();
     }
@@ -894,6 +910,56 @@ describe("ThreadComposer", () => {
     ));
     expect(input).toHaveValue("keep this draft");
     expect(screen.getByRole("button", { name: "End conversation" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("transcribes audio when the browser delivers the blob after the recorder stops", async () => {
+    mockVoiceRecorder(new Blob(["voice"], { type: "audio/mp4" }), { blobTiming: "after-stop" });
+    const { level } = mockConversationAudio();
+    const onSend = vi.fn();
+    const onTranscribeAudio = vi.fn(async () => "heard after stop");
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        onTranscribeAudio={onTranscribeAudio}
+        placeholder="Type your message..."
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Voice conversation" }));
+    expect(await screen.findByLabelText("Listening")).toBeInTheDocument();
+    await speakThenPause(level);
+
+    await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalledWith(
+      expect.stringMatching(/^data:audio\/mp4;base64,/),
+      expect.objectContaining({ durationMs: expect.any(Number) }),
+    ));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith(
+      "heard after stop",
+      undefined,
+      { voiceReply: true },
+    ));
+    expect(screen.queryByText("Could not transcribe audio.")).not.toBeInTheDocument();
+  });
+
+  it("explains when speech ends without any recorded audio", async () => {
+    mockVoiceRecorder(new Blob(["voice"], { type: "audio/webm" }), { blobTiming: "never" });
+    const { level } = mockConversationAudio();
+    const onTranscribeAudio = vi.fn(async () => "unused");
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        onTranscribeAudio={onTranscribeAudio}
+        placeholder="Type your message..."
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Voice conversation" }));
+    expect(await screen.findByLabelText("Listening")).toBeInTheDocument();
+    await speakThenPause(level);
+
+    expect(await screen.findByText("Could not transcribe audio.")).toBeInTheDocument();
+    expect(onTranscribeAudio).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Listening")).toBeInTheDocument();
   });
 
   it("transcribes speech when the room never returns to digital silence", async () => {

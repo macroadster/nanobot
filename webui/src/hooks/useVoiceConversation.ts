@@ -81,6 +81,10 @@ const ECHO_FLOOR_BLOCK = 0.35;
 // A gate below that never observes a pause, so the utterance never closes.
 const MIN_SPEECH_GATE = 0.2;
 const MAX_SPEECH_GATE = 0.62;
+// Slice while speaking so a late final blob cannot drop the whole utterance.
+const RECORDER_TIMESLICE_MS = 200;
+// Safari emits the audio blob after the stop event. Wait for it.
+const RECORDER_FLUSH_MS = 400;
 
 let timings: VoiceTimings = { ...DEFAULT_TIMINGS };
 let phase: VoiceConversationPhase = "idle";
@@ -90,7 +94,6 @@ let sessionGeneration = 0;
 let starting = false;
 let stream: MediaStream | null = null;
 let recorder: MediaRecorder | null = null;
-let chunks: BlobPart[] = [];
 let utteranceClosing = false;
 let discardCapture = false;
 let captureStartedAt = 0;
@@ -474,7 +477,50 @@ function beginCapture(now: number, leadingSpeech: number): void {
     return;
   }
   const generation = sessionGeneration;
-  chunks = [];
+  const recordedChunks: BlobPart[] = [];
+  let flushedAfterStop = false;
+  let settled = false;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let snapshotted = false;
+  let spokenAtStop = 0;
+  let durationAtStop = 0;
+  const snapshot = () => {
+    if (snapshotted) return;
+    snapshotted = true;
+    spokenAtStop = speechMs;
+    durationAtStop = Math.max(0, performance.now() - captureStartedAt);
+  };
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    snapshot();
+    const mimeType = nextRecorder.mimeType || "audio/webm";
+    if (recorder === nextRecorder) recorder = null;
+    utteranceClosing = false;
+    if (discardCapture || generation !== sessionGeneration) {
+      discardCapture = false;
+      return;
+    }
+    void finishCapture(
+      recordedChunks.splice(0),
+      durationAtStop,
+      spokenAtStop,
+      mimeType,
+      generation,
+    );
+  };
+  const armFlush = (delayMs: number) => {
+    if (settled) return;
+    if (flushTimer !== null) clearTimeout(flushTimer);
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      settle();
+    }, delayMs);
+  };
   utteranceClosing = false;
   discardCapture = false;
   captureStartedAt = now - leadingSpeech;
@@ -484,23 +530,30 @@ function beginCapture(now: number, leadingSpeech: number): void {
   lastElapsedPublish = now;
   elapsedLabel = formatVoiceElapsed(leadingSpeech);
   recorder = nextRecorder;
+  // Read the blob when it arrives. Safari fires stop first, then dataavailable,
+  // so reading chunks inside onstop sends an empty recording back to listening.
   nextRecorder.ondataavailable = (event) => {
-    if (event.data.size > 0) chunks.push(event.data);
+    if (event.data.size > 0) recordedChunks.push(event.data);
+    if (nextRecorder.state !== "inactive" || recordedChunks.length === 0) return;
+    flushedAfterStop = true;
+    snapshot();
+    armFlush(0);
   };
   nextRecorder.onstop = () => {
-    const recorded = chunks.splice(0);
-    const durationMs = Math.max(0, performance.now() - captureStartedAt);
-    const spokenMs = speechMs;
-    const mimeType = nextRecorder.mimeType || "audio/webm";
-    if (recorder === nextRecorder) recorder = null;
-    utteranceClosing = false;
-    if (discardCapture || generation !== sessionGeneration) {
-      discardCapture = false;
+    snapshot();
+    if (!flushedAfterStop) armFlush(RECORDER_FLUSH_MS);
+  };
+  try {
+    nextRecorder.start(RECORDER_TIMESLICE_MS);
+  } catch {
+    try {
+      nextRecorder.start();
+    } catch {
+      recorder = null;
+      readOptions?.().onError("unsupported");
       return;
     }
-    void finishCapture(recorded, durationMs, spokenMs, mimeType, generation);
-  };
-  nextRecorder.start();
+  }
   setPhase("capturing");
 }
 
@@ -509,11 +562,8 @@ function endCapture(): void {
   const current = recorder;
   if (!current || current.state === "inactive") return;
   utteranceClosing = true;
-  try {
-    if (typeof current.requestData === "function") current.requestData();
-  } catch {
-    // Some recorders only flush inside stop().
-  }
+  // requestData() immediately before stop() clears Safari's buffer, so the
+  // stop event then observes an empty blob and the utterance is discarded.
   current.stop();
 }
 
@@ -527,6 +577,9 @@ async function finishCapture(
   try {
     if (!stream || generation !== sessionGeneration) return;
     if (recorded.length === 0 || spokenMs < timings.minSpeechMs) {
+      if (recorded.length === 0 && spokenMs >= timings.minSpeechMs) {
+        readOptions?.().onError("failed");
+      }
       resumeAfterUtterance();
       return;
     }
@@ -640,7 +693,6 @@ function speechGate(): number {
 }
 
 function resetDetectors(): void {
-  chunks = [];
   utteranceClosing = false;
   discardCapture = false;
   captureStartedAt = 0;
