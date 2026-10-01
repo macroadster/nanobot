@@ -1744,13 +1744,18 @@
         "search": "Buscar",
         "reason": "Raciocinar",
         "deepResearch": "Pesquisa aprofundada",
-        "voice": "Entrada de voz"
+        "voice": "Conversa por voz"
       },
       "voice": {
-        "hint": "Clique para ditar ou segure",
-        "stop": "Parar gravação",
+        "hint": "Fale naturalmente. Uma pausa envia, e a resposta é reproduzida.",
+        "stop": "Encerrar conversa",
+        "starting": "Iniciando o microfone",
+        "listening": "Ouvindo",
+        "hearingStatus": "Ouvindo você {{time}}",
         "transcribing": "Transcrevendo...",
-        "recordingStatus": "Gravando {{time}}"
+        "sending": "Enviando",
+        "thinking": "Pensando",
+        "speaking": "Falando"
       },
       "voiceErrors": {
         "insecureContext": "Por segurança, o Chrome e outros navegadores bloqueiam o acesso ao microfone em páginas HTTP remotas. Abra esta WebUI por HTTPS para usar a entrada de voz.",

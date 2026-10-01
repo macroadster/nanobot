@@ -5,6 +5,8 @@ import { useThreadVisibility } from "@/hooks/useThreadVisibility";
 
 import { useClient } from "@/providers/ClientProvider";
 import { resolveModelRequestFailureCopy } from "@/lib/model-request-failure";
+import { toMediaAttachment } from "@/lib/media";
+import { playVoiceOutput } from "@/lib/voice-output";
 import { hasPendingAgentActivity } from "@/lib/activity-timeline";
 import type { StreamError } from "@/lib/nanobot-client";
 import {
@@ -45,13 +47,8 @@ type PendingStreamEvent =
 
 function playVoiceReply(media: UIMediaAttachment[] | undefined): void {
   const clip = media?.find((item) => item.kind === "audio" && item.url);
-  if (!clip?.url || typeof Audio === "undefined") return;
-  try {
-    const audio = new Audio(clip.url);
-    void audio.play().catch(() => undefined);
-  } catch {
-    // The player on the message remains usable when autoplay is blocked.
-  }
+  if (!clip?.url) return;
+  playVoiceOutput(clip.url);
 }
 
 const BACKGROUND_STREAM_FLUSH_INTERVAL_MS = 1_000;

@@ -30,6 +30,10 @@ import { ThreadHeader } from "@/components/thread/ThreadHeader";
 import { StreamErrorNotice } from "@/components/thread/StreamErrorNotice";
 import { ThreadViewport, type ThreadViewportHandle } from "@/components/thread/ThreadViewport";
 import { useNanobotStream, type SendAttachment, type SendOptions } from "@/hooks/useNanobotStream";
+import {
+  isVoiceConversationActive,
+  stopVoiceConversation,
+} from "@/hooks/useVoiceConversation";
 import { useSessionHistory } from "@/hooks/useSessions";
 import { useFilePreviewState, type FilePreviewState, type FilePreviewStore } from "@/hooks/useFilePreviewState";
 import {
@@ -681,6 +685,16 @@ export function ThreadShell({
 }: ThreadShellProps) {
   const { t } = useTranslation();
   const chatId = session?.chatId ?? null;
+  const voiceChatRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const previous = voiceChatRef.current;
+    voiceChatRef.current = chatId;
+    if (previous === undefined || previous === chatId) return;
+    // The welcome composer starts the conversation before a chat exists.
+    if (previous === null && chatId && isVoiceConversationActive()) return;
+    stopVoiceConversation();
+  }, [chatId]);
+  useEffect(() => () => stopVoiceConversation(), []);
   const historyKey = temporary ? null : session?.key ?? null;
   const previewSessionKey = session?.key ?? null;
   const mentionSessions = useMemo(

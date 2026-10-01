@@ -1731,13 +1731,18 @@
         "search": "Buscar",
         "reason": "Razonar",
         "deepResearch": "Investigación profunda",
-        "voice": "Entrada de voz"
+        "voice": "Conversación de voz"
       },
       "voice": {
-        "hint": "Haz clic para dictar o mantén",
-        "stop": "Detener grabación",
+        "hint": "Habla con naturalidad. Una pausa envía el mensaje y la respuesta se reproduce.",
+        "stop": "Terminar conversación",
+        "starting": "Iniciando el micrófono",
+        "listening": "Escuchando",
+        "hearingStatus": "Te escucho {{time}}",
         "transcribing": "Transcribiendo...",
-        "recordingStatus": "Grabando {{time}}"
+        "sending": "Enviando",
+        "thinking": "Pensando",
+        "speaking": "Hablando"
       },
       "voiceErrors": {
         "insecureContext": "Por seguridad, Chrome y otros navegadores bloquean el acceso al micrófono en páginas HTTP remotas. Abre esta WebUI mediante HTTPS para usar la entrada de voz.",

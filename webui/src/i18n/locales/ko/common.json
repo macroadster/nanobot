@@ -1730,13 +1730,18 @@
         "search": "검색",
         "reason": "추론",
         "deepResearch": "심층 조사",
-        "voice": "음성 입력"
+        "voice": "음성 대화"
       },
       "voice": {
-        "hint": "클릭해 받아쓰거나 길게 누르기",
-        "stop": "녹음 중지",
+        "hint": "말하면 됩니다. 잠시 멈추면 전송되고 답변이 재생됩니다.",
+        "stop": "대화 끝내기",
+        "starting": "마이크를 켜는 중",
+        "listening": "듣는 중",
+        "hearingStatus": "듣는 중 {{time}}",
         "transcribing": "변환 중...",
-        "recordingStatus": "녹음 중 {{time}}"
+        "sending": "보내는 중",
+        "thinking": "생각 중",
+        "speaking": "말하는 중"
       },
       "voiceErrors": {
         "insecureContext": "보안을 위해 Chrome 및 기타 브라우저는 원격 HTTP 페이지의 마이크 접근을 차단합니다. 음성 입력을 사용하려면 HTTPS로 이 WebUI를 여세요.",

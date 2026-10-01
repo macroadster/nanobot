@@ -1730,13 +1730,18 @@
         "search": "Tìm kiếm",
         "reason": "Suy luận",
         "deepResearch": "Nghiên cứu sâu",
-        "voice": "Nhập bằng giọng nói"
+        "voice": "Hội thoại bằng giọng nói"
       },
       "voice": {
-        "hint": "Bấm để đọc chính tả hoặc nhấn giữ",
-        "stop": "Dừng ghi âm",
+        "hint": "Nói tự nhiên. Dừng lại sẽ gửi, và câu trả lời được phát.",
+        "stop": "Kết thúc hội thoại",
+        "starting": "Đang bật micrô",
+        "listening": "Đang nghe",
+        "hearingStatus": "Đang nghe bạn {{time}}",
         "transcribing": "Đang chép lời...",
-        "recordingStatus": "Đang ghi {{time}}"
+        "sending": "Đang gửi",
+        "thinking": "Đang suy nghĩ",
+        "speaking": "Đang nói"
       },
       "voiceErrors": {
         "insecureContext": "Vì lý do bảo mật, Chrome và các trình duyệt khác chặn quyền truy cập micrô trên các trang HTTP từ xa. Mở WebUI này qua HTTPS để dùng tính năng nhập bằng giọng nói.",

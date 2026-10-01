@@ -1730,13 +1730,18 @@
         "search": "検索",
         "reason": "推論",
         "deepResearch": "詳細調査",
-        "voice": "音声入力"
+        "voice": "音声会話"
       },
       "voice": {
-        "hint": "クリックして音声入力、または長押し",
-        "stop": "録音を停止",
+        "hint": "話しかけるだけです。間を置くと送信され、返事が再生されます。",
+        "stop": "会話を終了",
+        "starting": "マイクを起動しています",
+        "listening": "聞いています",
+        "hearingStatus": "聞いています {{time}}",
         "transcribing": "文字起こし中...",
-        "recordingStatus": "録音中 {{time}}"
+        "sending": "送信しています",
+        "thinking": "考えています",
+        "speaking": "話しています"
       },
       "voiceErrors": {
         "insecureContext": "セキュリティ上、Chrome などのブラウザーはリモートの HTTP ページからのマイクアクセスをブロックします。音声入力を使用するには、この WebUI を HTTPS で開いてください。",

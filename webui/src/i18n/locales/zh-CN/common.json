@@ -1929,13 +1929,18 @@
         "search": "搜索",
         "reason": "推理",
         "deepResearch": "深度研究",
-        "voice": "语音输入"
+        "voice": "语音对话"
       },
       "voice": {
-        "hint": "点击进行听写或长按",
-        "stop": "停止录音",
+        "hint": "直接说话。停顿后会发送，回复会自动播放。",
+        "stop": "结束对话",
+        "starting": "正在打开麦克风",
+        "listening": "正在听",
+        "hearingStatus": "正在听你说 {{time}}",
         "transcribing": "正在转写...",
-        "recordingStatus": "正在录音 {{time}}"
+        "sending": "正在发送",
+        "thinking": "正在想",
+        "speaking": "正在说"
       },
       "voiceErrors": {
         "insecureContext": "出于安全考虑，Chrome 等浏览器会阻止远程 HTTP 页面访问麦克风。请通过 HTTPS 打开此 WebUI 以使用语音输入。",

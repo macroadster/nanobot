@@ -1936,13 +1936,18 @@
         "search": "Search",
         "reason": "Reason",
         "deepResearch": "Deep research",
-        "voice": "Voice input"
+        "voice": "Voice conversation"
       },
       "voice": {
-        "hint": "Click to dictate or hold",
-        "stop": "Stop recording",
+        "hint": "Speak naturally. A pause sends, and the reply plays aloud.",
+        "stop": "End conversation",
+        "starting": "Starting microphone",
+        "listening": "Listening",
+        "hearingStatus": "Hearing you {{time}}",
         "transcribing": "Transcribing...",
-        "recordingStatus": "Recording {{time}}"
+        "sending": "Sending",
+        "thinking": "Thinking",
+        "speaking": "Speaking"
       },
       "voiceErrors": {
         "insecureContext": "Chrome and other browsers block microphone access on remote HTTP pages for security. Open this WebUI over HTTPS to use voice input.",

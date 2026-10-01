@@ -436,9 +436,10 @@ The gateway refuses to start with `host` set to `"0.0.0.0"` unless `token` or
 form.
 
 Plain HTTP is enough for basic WebUI access, but browsers expose microphone
-capture only in secure contexts. Voice input works on same-machine localhost;
-from another device, serve the WebUI over HTTPS with a certificate that device
-trusts. Configure [`sslCertfile` and `sslKeyfile`](./websocket.md#tlsssl) on the
+capture only in secure contexts. Voice conversation works on same-machine
+localhost: one click starts it, a pause sends what you said, and the spoken
+reply plays without another click. From another device, serve the WebUI over
+HTTPS with a certificate that device trusts. Configure [`sslCertfile` and `sslKeyfile`](./websocket.md#tlsssl) on the
 WebSocket channel and open `https://<your-host>:8765`, or terminate HTTPS at a
 reverse proxy and use that proxy's HTTPS URL.
 

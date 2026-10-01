@@ -1730,13 +1730,18 @@
         "search": "搜尋",
         "reason": "推理",
         "deepResearch": "深度研究",
-        "voice": "語音輸入"
+        "voice": "語音對話"
       },
       "voice": {
-        "hint": "點選或長按以開始聽寫",
-        "stop": "停止錄音",
+        "hint": "直接說話。停頓後會送出，回覆會自動播放。",
+        "stop": "結束對話",
+        "starting": "正在開啟麥克風",
+        "listening": "正在聽",
+        "hearingStatus": "正在聽你說 {{time}}",
         "transcribing": "正在轉寫…",
-        "recordingStatus": "正在錄音 {{time}}"
+        "sending": "正在傳送",
+        "thinking": "正在想",
+        "speaking": "正在說"
       },
       "voiceErrors": {
         "insecureContext": "基於安全考量，Chrome 等瀏覽器會阻止遠端 HTTP 頁面存取麥克風。請透過 HTTPS 開啟此 WebUI 以使用語音輸入。",

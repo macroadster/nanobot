@@ -1730,13 +1730,18 @@
         "search": "Cari",
         "reason": "Bernalar",
         "deepResearch": "Riset mendalam",
-        "voice": "Input suara"
+        "voice": "Percakapan suara"
       },
       "voice": {
-        "hint": "Klik untuk mendikte atau tahan",
-        "stop": "Hentikan rekaman",
+        "hint": "Bicara secara alami. Jeda mengirim, dan balasan diputar.",
+        "stop": "Akhiri percakapan",
+        "starting": "Menyalakan mikrofon",
+        "listening": "Mendengarkan",
+        "hearingStatus": "Mendengarkan Anda {{time}}",
         "transcribing": "Mentranskripsi...",
-        "recordingStatus": "Merekam {{time}}"
+        "sending": "Mengirim",
+        "thinking": "Sedang berpikir",
+        "speaking": "Sedang berbicara"
       },
       "voiceErrors": {
         "insecureContext": "Demi keamanan, Chrome dan browser lain memblokir akses mikrofon pada halaman HTTP jarak jauh. Buka WebUI ini melalui HTTPS untuk menggunakan input suara.",

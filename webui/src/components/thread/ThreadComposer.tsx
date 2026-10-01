@@ -91,7 +91,12 @@ import { useComposerMentionInput } from "@/hooks/useComposerMentionInput";
 import { useLogoFallback } from "@/hooks/useLogoFallback";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import type { SendAttachment, SendOptions } from "@/hooks/useNanobotStream";
-import { useVoiceRecorder, type VoiceRecorderErrorKey } from "@/hooks/useVoiceRecorder";
+import {
+  useVoiceConversation,
+  useVoiceLevels,
+  type VoiceConversationPhase,
+} from "@/hooks/useVoiceConversation";
+import type { VoiceConversationErrorKey } from "@/lib/voice-audio";
 import type {
   CliAppInfo,
   ChatSummary,
@@ -151,14 +156,6 @@ function isVoiceShortcutDown(event: KeyboardEvent): boolean {
   );
 }
 
-function isVoiceShortcutRelease(event: KeyboardEvent): boolean {
-  return (
-    event.code === VOICE_SHORTCUT_CODE
-    || event.key === "Control"
-    || event.key === "Shift"
-  );
-}
-
 function getVoiceShortcutPlatform(): VoiceShortcutPlatform {
   if (typeof navigator === "undefined") return "other";
   const userAgentData = (navigator as Navigator & { userAgentData?: { platform?: string } })
@@ -186,6 +183,34 @@ function getVoiceShortcutLabel(): string {
     case "windows":
     case "other":
       return "Ctrl ⇧ D";
+  }
+}
+
+function voiceStatusText(
+  phase: VoiceConversationPhase,
+  elapsedLabel: string,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  switch (phase) {
+    case "arming":
+      return t("thread.composer.voice.starting", { defaultValue: "Starting microphone" });
+    case "listening":
+      return t("thread.composer.voice.listening", { defaultValue: "Listening" });
+    case "capturing":
+      return t("thread.composer.voice.hearingStatus", {
+        time: elapsedLabel || "0:00",
+        defaultValue: `Hearing you ${elapsedLabel || "0:00"}`,
+      });
+    case "transcribing":
+      return t("thread.composer.voice.transcribing", { defaultValue: "Transcribing..." });
+    case "sending":
+      return t("thread.composer.voice.sending", { defaultValue: "Sending" });
+    case "thinking":
+      return t("thread.composer.voice.thinking", { defaultValue: "Thinking" });
+    case "speaking":
+      return t("thread.composer.voice.speaking", { defaultValue: "Speaking" });
+    case "idle":
+      return "";
   }
 }
 
@@ -270,19 +295,18 @@ const QUEUED_PROMPTS_LIMIT = 20;
 const QUEUED_PROMPT_MAX_CHARS = 4000;
 const SESSION_MENTIONS_LIMIT = 8;
 
-function VoiceRecordingMeter({
+function VoiceConversationMeter({
   ariaLabel,
   className,
-  elapsedLabel,
   isHero,
-  levels,
+  readout,
 }: {
   ariaLabel: string;
   className?: string;
-  elapsedLabel: string;
   isHero: boolean;
-  levels: number[];
+  readout: string;
 }) {
+  const levels = useVoiceLevels();
   return (
     <div
       className={cn(
@@ -302,8 +326,8 @@ function VoiceRecordingMeter({
           />
         ))}
       </span>
-      <span className="min-w-[2.1rem] text-right text-[12px] font-medium tabular-nums text-muted-foreground">
-        {elapsedLabel}
+      <span className="max-w-[9rem] truncate text-right text-[12px] font-medium tabular-nums text-muted-foreground">
+        {readout}
       </span>
     </div>
   );
@@ -1014,7 +1038,6 @@ export function ThreadComposer({
   const previousQueueRunRef = useRef({ key: pendingQueueKey, isStreaming });
   const skipNextQueuedFlushRef = useRef(false);
   const skipQueuedPromptPersistRef = useRef(false);
-  const voiceShortcutDownRef = useRef(false);
   const voiceTranscriptsRef = useRef<string[]>([]);
   const voiceErrorFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isHero = variant === "hero";
@@ -1620,22 +1643,6 @@ export function ThreadComposer({
     voiceTranscriptsRef.current.some((snippet) => snippet.length > 0 && text.includes(snippet))
   ), []);
 
-  const appendTranscription = useCallback((text: string) => {
-    const transcript = text.trim();
-    if (!transcript) return;
-    voiceTranscriptsRef.current = [...voiceTranscriptsRef.current, transcript].slice(-8);
-    secondEnterPromptIdRef.current = null;
-    setValue((current) => {
-      if (!current.trim()) return transcript;
-      const separator = /[\s\n]$/.test(current) ? "" : " ";
-      return `${current}${separator}${transcript}`;
-    });
-    setSlashMenuDismissed(false);
-    setCliAppMenuDismissed(false);
-    setInlineError(null);
-    resizeTextarea();
-  }, [resizeTextarea]);
-
   const clearVoiceErrorTimers = useCallback(() => {
     if (voiceErrorFadeTimerRef.current !== null) clearTimeout(voiceErrorFadeTimerRef.current);
     voiceErrorFadeTimerRef.current = null;
@@ -1645,7 +1652,7 @@ export function ThreadComposer({
     setVoiceErrorFading(false);
     setInlineError(null);
   }, [clearVoiceErrorTimers]);
-  const setVoiceError = useCallback((key: VoiceRecorderErrorKey) => {
+  const setVoiceError = useCallback((key: VoiceConversationErrorKey) => {
     clearVoiceErrorTimers();
     setVoiceErrorFading(false);
     setInlineError(t(`thread.composer.voiceErrors.${key}`));
@@ -1658,12 +1665,28 @@ export function ThreadComposer({
       }, VOICE_ERROR_FADE_MS);
     }, VOICE_ERROR_VISIBLE_MS);
   }, [clearVoiceErrorTimers, t]);
-  const voiceRecorder = useVoiceRecorder({
+  const sendVoiceUtterance = useCallback((text: string) => {
+    const transcript = text.trim();
+    if (!transcript) return false;
+    if (modelNeedsSetup) {
+      setModelSetupAttentionRequest((request) => request + 1);
+      return false;
+    }
+    if (utf8Bytes(transcript) > maxTextBytes) {
+      setInlineError(textTooLargeMessage());
+      return false;
+    }
+    onSend(transcript, undefined, { voiceReply: true });
+    return true;
+  }, [maxTextBytes, modelNeedsSetup, onSend, textTooLargeMessage]);
+  const voice = useVoiceConversation({
     disabled: interactionDisabled,
+    isStreaming,
     onClearError: clearInlineError,
     onError: setVoiceError,
-    onTranscript: appendTranscription,
+    onInterrupt: onStop,
     onTranscribeAudio,
+    onUtterance: sendVoiceUtterance,
     wantsWav: transcriptionProvider === "xiaomi_mimo" || transcriptionProvider === "grok",
   });
 
@@ -1673,35 +1696,15 @@ export function ThreadComposer({
     if (!onTranscribeAudio) return;
 
     function onKeyDown(event: KeyboardEvent): void {
-      if (!isVoiceShortcutDown(event) || event.repeat || voiceShortcutDownRef.current) return;
+      if (!isVoiceShortcutDown(event) || event.repeat) return;
       event.preventDefault();
       secondEnterPromptIdRef.current = null;
-      voiceShortcutDownRef.current = true;
-      voiceRecorder.beginShortcutHold();
-    }
-
-    function onKeyUp(event: KeyboardEvent): void {
-      if (!voiceShortcutDownRef.current || !isVoiceShortcutRelease(event)) return;
-      event.preventDefault();
-      voiceShortcutDownRef.current = false;
-      voiceRecorder.endShortcutHold();
-    }
-
-    function onWindowBlur(): void {
-      if (!voiceShortcutDownRef.current) return;
-      voiceShortcutDownRef.current = false;
-      voiceRecorder.endShortcutHold();
+      voice.toggle();
     }
 
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("blur", onWindowBlur);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("blur", onWindowBlur);
-    };
-  }, [onTranscribeAudio, voiceRecorder.beginShortcutHold, voiceRecorder.endShortcutHold]);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onTranscribeAudio, voice.toggle]);
 
   const chooseSlashCommand = useCallback(
     (command: SlashPaletteCommand) => {
@@ -2279,22 +2282,16 @@ export function ThreadComposer({
 
   const attachButtonDisabled = interactionDisabled || full;
   const showVoiceButton = Boolean(onTranscribeAudio);
-  const voiceRecordingStatusLabel = t("thread.composer.voice.recordingStatus", {
-    time: voiceRecorder.elapsedLabel,
-    defaultValue: `Recording ${voiceRecorder.elapsedLabel}`,
-  });
-  const voiceButtonLabel =
-    voiceRecorder.state === "recording"
-      ? t("thread.composer.voice.stop")
-      : voiceRecorder.state === "transcribing"
-        ? t("thread.composer.voice.transcribing")
-        : t("thread.composer.tools.voice");
-  const voiceButtonTooltip =
-    voiceRecorder.state === "recording"
-      ? t("thread.composer.voice.stop")
-      : voiceRecorder.state === "transcribing"
-        ? t("thread.composer.voice.transcribing")
-        : t("thread.composer.voice.hint");
+  const voiceActive = voice.phase !== "idle";
+  const voiceStatusLabel = voiceStatusText(voice.phase, voice.elapsedLabel, t);
+  const voiceButtonLabel = voice.phase === "idle"
+    ? t("thread.composer.tools.voice")
+    : voice.phase === "arming"
+      ? t("thread.composer.voice.starting", { defaultValue: "Starting microphone" })
+      : t("thread.composer.voice.stop");
+  const voiceButtonTooltip = voice.phase === "idle"
+    ? t("thread.composer.voice.hint")
+    : voiceButtonLabel;
   const showStopButton = isStreaming && !!onStop;
   const relaxedHeroInput = isHero && images.length === 0 && !isStreaming;
   const compactIdle = compactWhenIdle && !compactControls && !isHero && !composerFocused
@@ -2624,13 +2621,14 @@ export function ThreadComposer({
             >
               <Plus className={cn(isHero ? "h-[18px] w-[18px]" : "h-4 w-4")} />
             </Button>
-            {voiceRecorder.isRecording ? (
-              <VoiceRecordingMeter
-                ariaLabel={voiceRecordingStatusLabel}
+            {voiceActive ? (
+              <VoiceConversationMeter
+                ariaLabel={voiceStatusLabel}
                 className="mx-1 flex-1"
-                elapsedLabel={voiceRecorder.elapsedLabel}
                 isHero={isHero}
-                levels={voiceRecorder.levels}
+                readout={voice.phase === "capturing" && voice.elapsedLabel
+                  ? voice.elapsedLabel
+                  : voiceStatusLabel}
               />
             ) : compactControls ? modelControl : accessControl}
           </div>
@@ -2640,8 +2638,8 @@ export function ThreadComposer({
               isHero ? "gap-1.5" : "gap-2",
             )}
           >
-            {!compactControls ? modelControl : null}
-            {!compactControls ? usageControl : null}
+            {!compactControls && !voiceActive ? modelControl : null}
+            {!compactControls && !voiceActive ? usageControl : null}
             {showVoiceButton ? (
               <TooltipProvider>
                 <Tooltip>
@@ -2650,24 +2648,24 @@ export function ThreadComposer({
                       type="button"
                       size="icon"
                       variant="ghost"
-                      disabled={voiceRecorder.buttonDisabled}
+                      disabled={(voice.phase === "idle" && interactionDisabled) || voice.phase === "arming"}
                       aria-label={voiceButtonLabel}
+                      aria-pressed={voiceActive}
                       aria-keyshortcuts={VOICE_SHORTCUT_ARIA}
                       title={voiceButtonTooltip}
-                      onPointerDown={voiceRecorder.beginPress}
-                      onPointerUp={voiceRecorder.endPress}
-                      onPointerCancel={voiceRecorder.endPress}
-                      onClick={voiceRecorder.handleClick}
+                      onClick={voice.toggle}
                       className={cn(
                         "thread-composer-action touch-target rounded-full border border-transparent text-muted-foreground hover:bg-muted/65 hover:text-foreground",
                         isHero ? "h-8 w-8" : "h-9 w-9",
-                        voiceRecorder.isRecording &&
+                        voice.phase === "capturing" &&
                           "bg-red-500 text-white shadow-[0_8px_20px_rgba(239,68,68,0.22)] hover:bg-red-500 hover:text-white",
+                        voiceActive && voice.phase !== "capturing" &&
+                          "bg-foreground text-background hover:bg-foreground hover:text-background",
                       )}
                     >
-                      {voiceRecorder.state === "transcribing" ? (
+                      {voice.phase === "arming" || voice.phase === "transcribing" || voice.phase === "sending" ? (
                         <Loader2 className={cn(isHero ? "h-4 w-4" : "h-4 w-4", "animate-spin")} />
-                      ) : voiceRecorder.isRecording ? (
+                      ) : voiceActive ? (
                         <Square className={cn(isHero ? "h-3.5 w-3.5" : "h-3.5 w-3.5")} fill="currentColor" />
                       ) : (
                         <Mic className={cn(isHero ? "h-4 w-4" : "h-4 w-4")} />
@@ -2680,7 +2678,7 @@ export function ThreadComposer({
                     className="flex items-center gap-2 rounded-full border border-border/70 bg-popover px-3 py-1.5 text-[13px] font-medium text-popover-foreground shadow-[0_8px_24px_rgba(15,23,42,0.13)] dark:border-white/10"
                   >
                     <span>{voiceButtonTooltip}</span>
-                    {voiceRecorder.state === "idle" ? (
+                    {voice.phase === "idle" ? (
                       <kbd className="rounded-full bg-muted px-2 py-0.5 font-sans text-[12px] font-semibold leading-none text-muted-foreground dark:bg-white/10 dark:text-white/80">
                         {voiceShortcutLabel}
                       </kbd>

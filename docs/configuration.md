@@ -1730,7 +1730,7 @@ Discord voice messages and WebUI microphone turns can be answered out loud. The 
 | `language` | transcription language, or `auto` | BCP-47 hint passed to text-to-speech. |
 | `maxChars` | `4000` | Maximum characters read aloud from one reply. Code fences are skipped. |
 
-Discord treats audio attachments, including native voice messages, as speech. A successful transcript is what the agent sees, and the same turn gets a spoken reply when Grok credentials are configured. In the WebUI, dictate into the composer and send that text; the reply includes an audio player and starts playback when the browser allows it.
+Discord treats audio attachments, including native voice messages, as speech. A successful transcript is what the agent sees, and the same turn gets a spoken reply when Grok credentials are configured. In the WebUI, the microphone button starts a hands-free conversation: a pause sends what you said, the reply plays aloud, and the microphone listens again when playback finishes. Talk during a reply to interrupt it. The same clip stays on an audio player. Typed messages stay text.
 
 Credentials are `providers.grok.apiKey`, `XAI_API_KEY`, or a `grok login` token in `~/.grok/auth.json`. Set `voice.speakReplies` to `false` to keep transcripts without spoken answers.
 
