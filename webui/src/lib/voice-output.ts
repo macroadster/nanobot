@@ -38,6 +38,10 @@ export function isVoiceOutputArmed(): boolean {
   return armed;
 }
 
+export function voiceOutputUrl(): string | null {
+  return currentUrl;
+}
+
 export function armVoiceOutput(): void {
   armed = true;
   const AudioContextCtor = audioContextCtor();

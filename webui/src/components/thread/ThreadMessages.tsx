@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { MoreHorizontal } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { MessageBlockMenuActions, MessageBubble, MessageCopyButton } from "@/components/MessageBubble";
+import { MessageBlockMenuActions, MessageBubble, MessageCopyButton, MessageVoiceButton } from "@/components/MessageBubble";
 import { MessageLinksMenu, useMessageWebLinks } from "@/components/MessageLinksMenu";
 import { FallbackResponseSources } from "@/components/ResponseSourceBadge";
 import {
@@ -434,6 +434,7 @@ function MessageBlockMenu({
   if (mobileActions) {
     return <div data-message-mobile-actions className={cn("mt-1 flex items-center", message.role === "user" ? "me-2 justify-end" : "-ms-2")}>
       <MessageCopyButton message={message} className="h-11 w-8 [&_svg]:h-4 [&_svg]:w-4" />
+      <MessageVoiceButton message={message} className="h-11 w-8 [&_svg]:h-4 [&_svg]:w-4" />
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogTrigger asChild>
           <button ref={triggerRef} type="button" data-message-block-menu-trigger aria-label={label}

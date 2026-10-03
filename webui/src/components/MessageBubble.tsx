@@ -16,6 +16,7 @@ import {
   Copy,
   Link2,
   Quote,
+  Volume2,
   Wrench,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -39,6 +40,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { armVoiceOutput, onVoiceOutput, playVoiceOutput, stopVoiceOutput, voiceOutputUrl } from "@/lib/voice-output";
 import { formatMessageEndTime } from "@/lib/format";
 import { toMediaAttachment } from "@/lib/media";
 import { matchingSlashCommand } from "@/lib/slash-command";
@@ -120,6 +122,49 @@ function useMessageCopy(content: string) {
   return { copied, label, onCopy };
 }
 
+function messageVoiceUrl(message: UIMessage): string | undefined {
+  for (const item of message.media ?? []) {
+    const normalized = toMediaAttachment(item);
+    if (normalized.kind === "audio" && normalized.url) return normalized.url;
+  }
+  return undefined;
+}
+
+const messageActionButtonClass = cn(
+  "inline-flex h-[var(--message-block-control-size)] w-[var(--message-block-action-width)] items-center justify-center rounded-control",
+  "text-muted-foreground transition-[color,background-color,scale] hover:bg-muted/70 hover:text-foreground active:scale-[0.96]",
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transform-none",
+);
+
+export function MessageVoiceButton({ message, className }: { message: UIMessage; className?: string }) {
+  const url = messageVoiceUrl(message);
+  if (!url) return null;
+  return <MessageVoiceControl url={url} className={className} />;
+}
+
+function MessageVoiceControl({ url, className }: { url: string; className?: string }) {
+  const { t } = useTranslation();
+  const [playingUrl, setPlayingUrl] = useState<string | null>(() => voiceOutputUrl());
+  useEffect(() => onVoiceOutput((event) => {
+    setPlayingUrl(event.type === "start" ? event.url : null);
+  }), []);
+  const playing = playingUrl === url;
+  const label = playing ? t("message.stopVoiceReply") : t("message.playVoiceReply");
+  return <TooltipProvider><Tooltip><TooltipTrigger asChild><button type="button" data-message-block-voice-action
+    aria-label={label} aria-pressed={playing}
+    onClick={() => {
+      if (playing) {
+        stopVoiceOutput();
+        return;
+      }
+      armVoiceOutput();
+      playVoiceOutput(url);
+    }}
+    className={cn(messageActionButtonClass, playing && "text-foreground", className)}>
+    <Volume2 className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+  </button></TooltipTrigger><TooltipContent side="top" align="center">{label}</TooltipContent></Tooltip></TooltipProvider>;
+}
+
 function messageCopyContent(message: UIMessage, t: (key: string) => string) {
   return message.role === "assistant" && message.compactReply === "empty"
     ? t("thread.compaction.empty")
@@ -137,12 +182,7 @@ export function MessageCopyButton({ message, className }: { message: UIMessage; 
   return <TooltipProvider><Tooltip><TooltipTrigger asChild><button type="button" data-message-block-copy-action
     data-assistant-copy-action={message.role === "assistant" || undefined}
     onClick={onCopy} aria-label={label}
-    className={cn(
-      "inline-flex h-[var(--message-block-control-size)] w-[var(--message-block-action-width)] items-center justify-center rounded-control",
-      "text-muted-foreground transition-[color,background-color,scale] hover:bg-muted/70 hover:text-foreground active:scale-[0.96]",
-      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transform-none",
-      className,
-    )}>
+    className={cn(messageActionButtonClass, className)}>
     {copied ? <Check className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
       : <Copy className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />}
   </button></TooltipTrigger><TooltipContent side="top" align="center">{label}</TooltipContent></Tooltip></TooltipProvider>;
@@ -176,6 +216,7 @@ export function MessageBlockMenuActions({
   const { t } = useTranslation();
   const content = messageCopyContent(message, t);
   const hasText = content.trim().length > 0;
+  const showVoice = !sheet && messageVoiceUrl(message) !== undefined;
   const showFork = message.role === "assistant"
     && !message.isStreaming
     && !isTurnStreaming
@@ -200,12 +241,12 @@ export function MessageBlockMenuActions({
         data-message-block-menu-actions
         className={cn("flex max-w-full flex-col items-start gap-1", sheet ? "w-full" : "w-max")}
       >
-        {(!sheet && hasText) || showFork || activity ? (
+        {(!sheet && hasText) || showFork || showVoice || activity ? (
           <div
             data-message-block-toolbar
             className={cn("flex w-full flex-wrap gap-x-1 gap-y-1", sheet ? "flex-col items-stretch" : "items-center")}
           >
-            {(!sheet && hasText) || showFork ? (
+            {(!sheet && hasText) || showFork || showVoice ? (
               <div className="flex min-h-[var(--message-block-control-size)] items-center gap-0.5">
                 {!sheet && hasText ? <MessageCopyButton message={message} /> : null}
                 {showFork ? (
@@ -235,6 +276,7 @@ export function MessageBlockMenuActions({
                     </TooltipContent>
                   </Tooltip>
                 ) : null}
+                {showVoice ? <MessageVoiceButton message={message} /> : null}
               </div>
             ) : null}
             {activity ? (
@@ -692,7 +734,7 @@ function MessageMedia({
       if (normalized.url && (inlineImages.has(normalized.url) || seen.has(normalized.url))) continue;
       if (normalized.url) seen.add(normalized.url);
       images.push({ url: normalized.url, name: normalized.name });
-    } else {
+    } else if (!(normalized.kind === "audio" && normalized.url)) {
       nonImages.push(normalized);
     }
   }

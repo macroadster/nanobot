@@ -2297,7 +2297,7 @@ export function ThreadComposer({
   const compactIdle = compactWhenIdle && !compactControls && !isHero && !composerFocused
     && value.length === 0 && images.length === 0 && !inlineError
     && !normalizedQuotedContext && !queuedPrompts.length && !goalState?.active
-    && !isDragging && !sessionDragPreview && !voiceRecorder.isRecording && !showProjectPicker;
+    && !isDragging && !sessionDragPreview && !voiceActive && !showProjectPicker;
   useLayoutEffect(() => {
     if (!compactWhenIdle || compactControls) return;
     const form = formRef.current;
@@ -2318,7 +2318,7 @@ export function ThreadComposer({
     controls.forEach((control) => observer?.observe(control));
     observer?.observe(actions);
     return () => observer?.disconnect();
-  }, [compactControls, compactWhenIdle, modelLabel, voiceRecorder.isRecording, workspaceScope]);
+  }, [compactControls, compactWhenIdle, modelLabel, voiceActive, workspaceScope]);
   const accessControl = workspaceScope && !workspaceControlsHidden ? (
     <WorkspaceAccessMenu
       scope={workspaceScope}
@@ -2328,7 +2328,7 @@ export function ThreadComposer({
       onChange={onWorkspaceScopeChange}
     />
   ) : null;
-  const modelControl = modelLabel && !voiceRecorder.isRecording ? (
+  const modelControl = modelLabel && !voiceActive ? (
     <ModelPresetBadge
       label={modelLabel}
       modelDetail={modelDetail}
@@ -2345,7 +2345,7 @@ export function ThreadComposer({
       onClick={modelNeedsSetup ? onModelBadgeClick : undefined}
     />
   ) : null;
-  const usageControl = !voiceRecorder.isRecording ? (
+  const usageControl = !voiceActive ? (
     <ComposerUsagePopover context={contextUsage} rounds={recentRoundUsage} showLabel={compactControls} bottomSheet={compactControls} />
   ) : null;
   const inputTextClasses = cn(

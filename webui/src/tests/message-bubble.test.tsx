@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { MessageBlockMenuActions, MessageBubble } from "@/components/MessageBubble";
@@ -12,6 +12,33 @@ import type {
   SlashCommand,
   UIMessage,
 } from "@/lib/types";
+
+const voiceOutput = vi.hoisted(() => {
+  type VoiceEvent = { type: "start" | "end"; url: string };
+  const listeners = new Set<(event: VoiceEvent) => void>();
+  return {
+    armVoiceOutput: vi.fn(),
+    playVoiceOutput: vi.fn((url: string) => {
+      for (const listener of listeners) listener({ type: "start", url });
+    }),
+    stopVoiceOutput: vi.fn(() => {
+      for (const listener of listeners) listener({ type: "end", url: "" });
+    }),
+    voiceOutputUrl: vi.fn((): string | null => null),
+    onVoiceOutput: vi.fn((listener: (event: VoiceEvent) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    }),
+  };
+});
+
+vi.mock("@/lib/voice-output", () => ({
+  armVoiceOutput: voiceOutput.armVoiceOutput,
+  playVoiceOutput: voiceOutput.playVoiceOutput,
+  stopVoiceOutput: voiceOutput.stopVoiceOutput,
+  voiceOutputUrl: voiceOutput.voiceOutputUrl,
+  onVoiceOutput: voiceOutput.onVoiceOutput,
+}));
 
 const CLI_APPS: CliAppInfo[] = [
   {
@@ -1212,6 +1239,78 @@ describe("MessageBubble", () => {
     expect(screen.getByRole("button", { name: /view image: growth.svg/i })).toBeInTheDocument();
     expect(container.querySelector('img[src="/api/media/sig/svg"]')).toBeInTheDocument();
     expect(screen.queryByLabelText("File attachment")).not.toBeInTheDocument();
+  });
+
+  it("replaces a voice play bar with a speaker beside copy and fork", () => {
+    voiceOutput.armVoiceOutput.mockClear();
+    voiceOutput.playVoiceOutput.mockClear();
+    voiceOutput.stopVoiceOutput.mockClear();
+    const message: UIMessage = {
+      id: "voice",
+      role: "assistant",
+      content: "Hello there",
+      createdAt: Date.now(),
+      media: [{ kind: "audio", url: "/api/media/sig/voice", name: "reply.mp3" }],
+    };
+
+    const { container } = render(
+      <>
+        <MessageBubble message={message} />
+        <MessageBlockMenuActions message={message} onForkFromHere={vi.fn()} />
+      </>,
+    );
+
+    expect(container.querySelector("audio")).not.toBeInTheDocument();
+    const toolbar = container.querySelector("[data-message-block-toolbar]")!;
+    const copy = screen.getByRole("button", { name: "Copy" });
+    const fork = screen.getByRole("button", { name: "Fork" });
+    const speaker = screen.getByRole("button", { name: "Play voice reply" });
+    expect(toolbar).toContainElement(speaker);
+    expect(copy.compareDocumentPosition(fork) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(fork.compareDocumentPosition(speaker) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(speaker);
+    expect(voiceOutput.armVoiceOutput).toHaveBeenCalledTimes(1);
+    expect(voiceOutput.playVoiceOutput).toHaveBeenCalledWith("/api/media/sig/voice");
+    const stop = screen.getByRole("button", { name: "Stop voice reply" });
+    expect(stop).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(stop);
+    expect(voiceOutput.stopVoiceOutput).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Play voice reply" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("keeps the voice speaker in the desktop message menu and beside copy on a phone", () => {
+    const message: UIMessage = {
+      id: "voice-thread",
+      role: "assistant",
+      content: "Hello there",
+      createdAt: 1,
+      media: [{ kind: "audio", url: "/api/media/sig/voice", name: "reply.mp3" }],
+    };
+    const desktop = render(<ThreadMessages messages={[message]} onForkFromMessage={vi.fn()} />);
+    expect(desktop.container.querySelector("audio")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
+    const menu = document.querySelector<HTMLElement>("[data-message-block-menu]")!;
+    expect(within(menu).getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(within(menu).getByRole("button", { name: "Fork" })).toBeInTheDocument();
+    expect(within(menu).getByRole("button", { name: "Play voice reply" })).toBeInTheDocument();
+    desktop.unmount();
+
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(max-width: 767px)",
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+    try {
+      const { container } = render(<ThreadMessages messages={[message]} />);
+      const footer = container.querySelector("[data-message-mobile-actions]")!;
+      expect(footer).toContainElement(screen.getByRole("button", { name: "Copy" }));
+      expect(footer).toContainElement(screen.getByRole("button", { name: "Play voice reply" }));
+      expect(container.querySelector("audio")).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
 });

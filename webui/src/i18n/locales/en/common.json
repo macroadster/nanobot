@@ -2299,6 +2299,8 @@
     "fallbackResponse": "This reply switched to a fallback model, answered by {{preset}}.",
     "copyReply": "Copy",
     "copiedReply": "Copied",
+    "playVoiceReply": "Play voice reply",
+    "stopVoiceReply": "Stop voice reply",
     "turnLatencyTitle": "Response time (end-to-end)",
     "fileEditViewDiff": "View diff",
     "fileEditViewLargeDiff": "View large diff",
