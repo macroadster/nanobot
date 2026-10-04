@@ -71,6 +71,31 @@ describe("FilePreviewPanel", () => {
     expect(screen.queryByText("session A")).not.toBeInTheDocument();
   });
 
+  it("renders an html webapp in a sandboxed page and can show its source", async () => {
+    vi.mocked(fetchFilePreview).mockImplementation(async (_token, _key, _path, _base, view) => (
+      view === "page"
+        ? {
+          kind: "page", path: "/workspace/apps/todo/index.html", display_path: "apps/todo/index.html",
+          project_path: "/workspace", size: 20, html: "<!doctype html><p>Todo</p>",
+        }
+        : {
+          path: "/workspace/apps/todo/index.html", display_path: "apps/todo/index.html",
+          project_path: "/workspace", size: 20, language: "html", content: "<p>Todo</p>", truncated: false,
+        }
+    ));
+    const { container } = render(
+      <FilePreviewPanel sessionKey="websocket:a" path="apps/todo/index.html" token="test" />,
+    );
+    const frame = await screen.findByTitle("Preview of index.html");
+    expect(frame).toHaveAttribute("sandbox", "allow-scripts allow-forms");
+    expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    expect(frame).toHaveAttribute("srcdoc", "<!doctype html><p>Todo</p>");
+    expect(container.querySelector("[data-file-preview-scroll]")).toHaveAttribute("hidden");
+    fireEvent.click(screen.getByRole("tab", { name: "Source" }));
+    expect(await screen.findByTestId("mock-code-block")).toHaveTextContent("<p>Todo</p>");
+    expect(container.querySelector("iframe")).not.toBeInTheDocument();
+  });
+
   it("opens the sidebar image in the shared zoomable viewer and returns to the preview", async () => {
     vi.mocked(fetchFilePreview).mockResolvedValue({
       kind: "image", path: "/workspace/chart.png", display_path: "chart.png",

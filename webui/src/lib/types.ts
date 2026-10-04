@@ -1629,6 +1629,7 @@ interface FilePreviewMetadata {
 export type FilePreviewPayload = FilePreviewMetadata & (
   | { kind?: "text"; language: string; content: string; truncated: boolean }
   | { kind: "image"; mime_type: string; data_url: string }
+  | { kind: "page"; html: string }
 );
 
 export type Outbound =

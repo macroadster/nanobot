@@ -10,6 +10,7 @@ import { FileActionsProvider } from "@/components/FileActions";
 import { WebPreviewContext } from "@/components/WebLink";
 import { WebPreviewPanel } from "@/components/WebPreviewPanel";
 import { parseWebLink } from "@/lib/web-preview";
+import { takeNewWebappPreview } from "@/lib/webapp-preview";
 import { createFilePreviewResource } from "@/lib/file-preview-resource";
 import { SessionHandleLabel } from "@/components/SessionHandleLabel";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
@@ -1547,9 +1548,9 @@ export function ThreadShell({
     [chatId, send, withWorkspaceScope],
   );
 
-  const loadTemporaryFilePreview = useCallback((path: string) =>
+  const loadTemporaryFilePreview = useCallback((path: string, view?: "page") =>
     client.requestMutation<FilePreviewPayload>("temporary_chat.file_preview", {
-      chat_id: chatId, path,
+      chat_id: chatId, path, ...(view ? { view } : {}),
     }).catch((error: unknown) => {
       if (error instanceof Error && "status" in error && typeof error.status === "number") {
         throw new ApiError(error.status, error.message);
@@ -1593,6 +1594,28 @@ export function ThreadShell({
 
   // Markdown blocks can retain rendered links while their text is unchanged.
   // Keep their callback stable, but always act on the current pane/session state.
+  const seenWebappsRef = useRef(new Set<string>());
+  const webappSeededRef = useRef(false);
+  useEffect(() => {
+    if (!previewSessionKey) return;
+    if (!isStreaming) {
+      webappSeededRef.current = false;
+      return;
+    }
+    const edits = messages.flatMap((message) => (message.fileEdits ?? []).map((edit) => ({
+      binary: edit.binary,
+      callId: edit.call_id,
+      operation: edit.operation,
+      path: edit.absolute_path || edit.path,
+      status: edit.status,
+    })));
+    const next = takeNewWebappPreview(edits, seenWebappsRef.current, webappSeededRef.current);
+    webappSeededRef.current = next.seeded;
+    if (!next.path) return;
+    cancelPreviewClose();
+    openFile(next.path);
+  }, [cancelPreviewClose, isStreaming, messages, openFile, previewSessionKey]);
+
   const openFilePreviewRef = useRef(handleOpenFilePreview);
   openFilePreviewRef.current = handleOpenFilePreview;
   const openFilePreview = useCallback((path: string) => openFilePreviewRef.current(path), []);
@@ -1607,6 +1630,12 @@ export function ThreadShell({
   const loadFilePreview = useCallback((path: string) => {
     if (!previewSessionKey) return Promise.reject(new Error("No active session"));
     return temporary ? loadTemporaryFilePreview(path) : fetchFilePreview(getToken(), previewSessionKey, path);
+  }, [previewSessionKey, temporary, loadTemporaryFilePreview, getToken]);
+  const loadFilePage = useCallback((path: string) => {
+    if (!previewSessionKey) return Promise.reject(new Error("No active session"));
+    return temporary
+      ? loadTemporaryFilePreview(path, "page")
+      : fetchFilePreview(getToken(), previewSessionKey, path, "", "page");
   }, [previewSessionKey, temporary, loadTemporaryFilePreview, getToken]);
   const filePreviews = useMemo(() => createFilePreviewResource(loadFilePreview), [loadFilePreview]);
   const fileActions = useMemo(() => ({
@@ -1989,14 +2018,15 @@ export function ThreadShell({
         >
           {activePreview.kind === "file" ? (
             <FilePreviewPanel
-              key={activePreview.id}
+              key={`${activePreview.id}:${activePreview.revision ?? 0}`}
               sessionKey={previewSessionKey}
               path={activePreview.value}
               token={token}
               loadPreview={filePreviews.load}
+              loadPage={loadFilePage}
               initialPreview={filePreviews.peek(activePreview.value)}
             />
-          ) : <WebPreviewPanel key={activePreview.id} url={activePreview.value} />}
+          ) : <WebPreviewPanel key={`${activePreview.id}:${activePreview.revision ?? 0}`} url={activePreview.value} />}
         </PreviewPane>
         </FileActionsProvider>
       ) : null}

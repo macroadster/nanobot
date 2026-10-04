@@ -57,6 +57,7 @@ from nanobot.webui.session_identity import is_valid_webui_chat_id, webui_session
 from nanobot.webui.sidebar_state import write_webui_sidebar_state
 from nanobot.webui.temporary_chats import TemporaryChatError
 from nanobot.webui.transcription_ws import webui_transcription_event
+from nanobot.webui.webapp_preview import webapp_page_preview_payload
 
 _WEBUI_REQUEST_CACHE_TTL_S = 5 * 60.0
 _WEBUI_REQUEST_CACHE_MAX = 256
@@ -811,6 +812,8 @@ class WebUICommandRouter:
                     result = file_reference_payload(path, scope=policy.workspace_scope)
                 elif probe:
                     result = file_preview_availability_payload(path, scope=policy.workspace_scope)
+                elif preview_payload.get("view") == "page":
+                    result = webapp_page_preview_payload(path, scope=policy.workspace_scope)
                 else:
                     result = file_preview_payload(path, scope=policy.workspace_scope)
             except TemporaryChatError as exc:

@@ -34,7 +34,11 @@ export function createFilePreviewResource(fetchPreview: (path: string) => Promis
         entry.payload = payload;
         entry.pending = undefined;
         entry.loadedAt = Date.now();
-        entry.bytes = 2 * (payload.kind === "image" ? payload.data_url.length : payload.content.length);
+        entry.bytes = 2 * (
+          payload.kind === "image" ? payload.data_url.length
+            : payload.kind === "page" ? payload.html.length
+              : payload.content.length
+        );
         let total = [...entries.values()].reduce((sum, item) => sum + item.bytes, 0);
         for (const [key, item] of entries) {
           if (total <= MAX_BYTES) break;

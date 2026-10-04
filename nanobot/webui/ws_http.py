@@ -135,6 +135,7 @@ from nanobot.webui.transcript import (
     build_webui_trace_detail_response,
     webui_transcript_revision,
 )
+from nanobot.webui.webapp_preview import webapp_page_preview_payload
 from nanobot.webui.workspaces import WebUIWorkspaceController
 
 _SLOW_WEBUI_HTTP_LOG_MS = 1_000
@@ -1188,6 +1189,8 @@ class GatewayHTTPHandler:
                 payload = file_reference_payload(path, scope=scope)
             elif is_probe:
                 payload = file_preview_availability_payload(path, scope=scope)
+            elif _query_first(query, "view") == "page":
+                payload = webapp_page_preview_payload(path, scope=scope)
             else:
                 payload = file_preview_payload(path, scope=scope)
         except WebUIFilePreviewError as e:

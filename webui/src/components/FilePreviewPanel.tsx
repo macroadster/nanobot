@@ -6,6 +6,7 @@ import { CodeBlock } from "@/components/CodeBlock";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { fileKindForPath, splitFilePath } from "@/components/FileReferenceChip";
 import { ApiError, fetchFilePreview } from "@/lib/api";
+import { isWebappPagePath } from "@/lib/webapp-preview";
 import type { FilePreviewPayload } from "@/lib/types";
 
 interface FilePreviewPanelProps {
@@ -13,6 +14,7 @@ interface FilePreviewPanelProps {
   path: string;
   token: string;
   loadPreview?: (path: string) => Promise<FilePreviewPayload>;
+  loadPage?: (path: string) => Promise<FilePreviewPayload>;
   initialPreview?: FilePreviewPayload;
 }
 
@@ -21,16 +23,22 @@ type PreviewState =
   | { status: "error"; error: unknown }
   | { status: "ready"; payload: FilePreviewPayload };
 
+type PageView = "page" | "source";
+
 export function FilePreviewPanel({
   sessionKey,
   path,
   token,
   loadPreview,
+  loadPage,
   initialPreview,
 }: FilePreviewPanelProps) {
   const { t } = useTranslation();
+  const webapp = isWebappPagePath(path);
+  const [view, setView] = useState<PageView>(webapp ? "page" : "source");
   const [state, setState] = useState<PreviewState>(() => initialPreview
     ? { status: "ready", payload: initialPreview } : { status: "loading" });
+  const [page, setPage] = useState<PreviewState>({ status: "loading" });
   const [imageOpen, setImageOpen] = useState(false);
   // Cache aging must not restart an already open preview on unrelated rerenders.
   const initialPreviewRef = useRef(initialPreview);
@@ -60,6 +68,34 @@ export function FilePreviewPanel({
     };
   }, [path, sessionKey, loadPreview]);
 
+  useEffect(() => {
+    setView(isWebappPagePath(path) ? "page" : "source");
+  }, [path]);
+
+  useEffect(() => {
+    if (!webapp || view !== "page") return;
+    let cancelled = false;
+    setPage({ status: "loading" });
+    const request = loadPage
+      ? loadPage(path)
+      : fetchFilePreview(tokenRef.current, sessionKey, path, "", "page");
+    request
+      .then((payload) => {
+        if (cancelled) return;
+        if (payload.kind !== "page" || typeof payload.html !== "string") {
+          setPage({ status: "error", error: new Error("page") });
+          return;
+        }
+        setPage({ status: "ready", payload });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setPage({ status: "error", error });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadPage, path, sessionKey, view, webapp]);
+
   const displayPath = state.status === "ready" ? state.payload.display_path : path;
   const { name } = splitFilePath(displayPath);
   const fileName = name || displayPath;
@@ -73,9 +109,56 @@ export function FilePreviewPanel({
       : t("filePreview.failed", { defaultValue: "Could not preview this file." }))
     : null;
 
+  const pageHtml = page.status === "ready" && page.payload.kind === "page" ? page.payload.html : null;
+  const pageError = page.status === "error"
+    ? (page.error instanceof ApiError
+      ? page.error.message
+      : t("filePreview.pageFailed", { defaultValue: "Could not preview this page." }))
+    : null;
+  const viewButton = (next: PageView, label: string) => (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={view === next}
+      onClick={() => setView(next)}
+      className={`h-7 rounded-compact px-2.5 text-[12.5px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        view === next ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <section aria-label={t("filePreview.aria")} data-testid="file-preview-panel" className="flex min-h-0 flex-1 flex-col">
+          {webapp ? (
+            <div className="flex h-10 shrink-0 items-center border-b border-border/40 px-2">
+              <div role="tablist" aria-label={t("filePreview.view", { defaultValue: "Preview view" })}
+                className="inline-flex items-center gap-0.5 rounded-compact bg-muted/60 p-0.5">
+                {viewButton("page", t("filePreview.page", { defaultValue: "Page" }))}
+                {viewButton("source", t("filePreview.source", { defaultValue: "Source" }))}
+              </div>
+            </div>
+          ) : null}
+          {webapp && view === "page" ? (
+            pageHtml ? (
+              <iframe
+                title={t("filePreview.pageFrame", { name: fileName, defaultValue: "Preview of {{name}}" })}
+                sandbox="allow-scripts allow-forms"
+                referrerPolicy="no-referrer"
+                srcDoc={pageHtml}
+                className="min-h-0 w-full flex-1 border-0 bg-white"
+              />
+            ) : (
+              <div role="status" className="flex min-h-0 flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
+                {page.status === "loading"
+                  ? t("filePreview.loading", { defaultValue: "Loading preview..." })
+                  : pageError}
+              </div>
+            )
+          ) : null}
           <div data-file-preview-scroll tabIndex={0}
+            hidden={webapp && view === "page"}
             className="min-h-0 flex-1 overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60">
             {state.status === "loading" ? (
               <div role="status" aria-label={t("filePreview.loading", { defaultValue: "Loading preview..." })}
@@ -97,7 +180,7 @@ export function FilePreviewPanel({
                   <p>{errorMessage}</p>
                 </div>
               </div>
-            ) : state.payload.kind === "image" ? (
+            ) : state.payload.kind === "page" ? null : state.payload.kind === "image" ? (
               <div className="flex min-h-full items-center justify-center p-4">
                 <button type="button" aria-label={`${t("lightbox.open")}: ${fileName}`} onClick={() => setImageOpen(true)}
                   className="flex max-h-full max-w-full cursor-zoom-in items-center justify-center rounded-compact focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">

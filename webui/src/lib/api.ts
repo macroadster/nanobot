@@ -450,9 +450,11 @@ export async function fetchFilePreview(
   key: string,
   path: string,
   base: string = "",
+  view?: "page",
 ): Promise<FilePreviewPayload> {
   const query = new URLSearchParams();
   query.set("path", path);
+  if (view) query.set("view", view);
   return request<FilePreviewPayload>(
     `${base}/api/sessions/${encodeURIComponent(key)}/file-preview?${query}`,
     token,

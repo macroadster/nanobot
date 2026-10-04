@@ -4,6 +4,8 @@ export interface PreviewTab {
   id: string;
   kind: "file" | "web";
   value: string;
+  /** Bumped when the same target is opened again so the pane reloads it. */
+  revision?: number;
 }
 
 export interface FilePreviewState {
@@ -39,8 +41,12 @@ export class FilePreviewStore {
   open(key: string, kind: PreviewTab["kind"], value: string) {
     const previous = this.get(key);
     const id = `${kind}:${value}`;
-    const tabs = previous.tabs.some((tab) => tab.id === id)
-      ? previous.tabs : [...previous.tabs, { id, kind, value }];
+    const existing = previous.tabs.find((tab) => tab.id === id);
+    const tabs = existing
+      ? previous.tabs.map((tab) => (
+        tab.id === id ? { ...tab, revision: (tab.revision ?? 0) + 1 } : tab
+      ))
+      : [...previous.tabs, { id, kind, value, revision: 0 }];
     this.update(key, { tabs, activeId: id });
   }
 
