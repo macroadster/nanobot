@@ -110,14 +110,199 @@ export async function convertBlobToWav(blob: Blob): Promise<string> {
   }
 }
 
+export interface VoicePcmUtterance {
+  sampleRate: number;
+  samples: Float32Array;
+}
+
+export interface VoicePcmTap {
+  beginUtterance: () => void;
+  close: () => void;
+  takeUtterance: () => VoicePcmUtterance | null;
+}
+
+// The speech gate waits until a run of audio stays loud, and MediaRecorder
+// starts only then. This keeps the audio from just before that decision.
+const VOICE_PREROLL_MS = 480;
+const PCM_PROCESSOR_BUFFER = 4096;
+
+interface PcmInputBuffer {
+  getChannelData: (channel: number) => Float32Array;
+  numberOfChannels: number;
+}
+
+interface PcmProcessorNode {
+  connect: (destination: AudioNode) => void;
+  disconnect: () => void;
+  onaudioprocess: ((event: { inputBuffer: PcmInputBuffer }) => void) | null;
+}
+
+interface ScriptProcessorFactory {
+  createScriptProcessor?: (
+    bufferSize: number,
+    inputChannels: number,
+    outputChannels: number,
+  ) => PcmProcessorNode;
+}
+
+/**
+ * Tap the microphone as PCM so a WAV utterance can include its onset.
+ * Returns null when the browser has no script processor.
+ */
+export function openVoicePcmTap(
+  context: AudioContext,
+  source: AudioNode,
+): VoicePcmTap | null {
+  const createScriptProcessor = (context as unknown as ScriptProcessorFactory).createScriptProcessor;
+  if (typeof createScriptProcessor !== "function") return null;
+  const sampleRate = context.sampleRate > 0 ? context.sampleRate : 48_000;
+  const capacity = Math.max(1, Math.round(sampleRate * VOICE_PREROLL_MS / 1000));
+  const ring = createSampleRing(capacity);
+  let processor: PcmProcessorNode | undefined;
+  let mute: GainNode | undefined;
+  try {
+    processor = createScriptProcessor.call(context, PCM_PROCESSOR_BUFFER, 1, 1);
+    mute = context.createGain();
+    mute.gain.value = 0;
+    source.connect(processor as unknown as AudioNode);
+    processor.connect(mute);
+    mute.connect(context.destination);
+  } catch {
+    try {
+      processor?.disconnect();
+      mute?.disconnect();
+    } catch {
+      // The graph may already be closing.
+    }
+    return null;
+  }
+  if (!processor || !mute) return null;
+
+  let capturing = false;
+  let chunks: Float32Array[] = [];
+  const push = (input: Float32Array) => {
+    ring.push(input);
+    if (!capturing || input.length === 0) return;
+    const copy = new Float32Array(input.length);
+    copy.set(input);
+    chunks.push(copy);
+  };
+  processor.onaudioprocess = (event) => {
+    push(mixdown(event.inputBuffer));
+  };
+
+  return {
+    beginUtterance() {
+      capturing = true;
+      chunks = [ring.snapshot()];
+    },
+    takeUtterance() {
+      if (!capturing) return null;
+      capturing = false;
+      const samples = concatSamples(chunks);
+      chunks = [];
+      return { sampleRate, samples };
+    },
+    close() {
+      capturing = false;
+      chunks = [];
+      processor.onaudioprocess = null;
+      try {
+        processor.disconnect();
+        mute.disconnect();
+      } catch {
+        // The graph may already be closing.
+      }
+    },
+  };
+}
+
+export function voiceSamplesToWavDataUrl(samples: Float32Array, sampleRate: number): Promise<string> {
+  return blobToDataUrl(floatChannelsToWav([samples], sampleRate > 0 ? sampleRate : 48_000));
+}
+
+function mixdown(buffer: PcmInputBuffer): Float32Array {
+  const channels = Math.max(1, buffer.numberOfChannels || 1);
+  const first = buffer.getChannelData(0);
+  if (channels === 1) return first;
+  const mixed = new Float32Array(first.length);
+  mixed.set(first);
+  for (let channel = 1; channel < channels; channel += 1) {
+    const data = buffer.getChannelData(channel);
+    const length = Math.min(mixed.length, data.length);
+    for (let index = 0; index < length; index += 1) mixed[index] += data[index] ?? 0;
+  }
+  for (let index = 0; index < mixed.length; index += 1) mixed[index] /= channels;
+  return mixed;
+}
+
+function createSampleRing(capacity: number) {
+  const data = new Float32Array(capacity);
+  let write = 0;
+  let filled = 0;
+  return {
+    push(input: Float32Array) {
+      if (capacity === 0 || input.length === 0) return;
+      let offset = 0;
+      let length = input.length;
+      if (length >= capacity) {
+        offset = length - capacity;
+        length = capacity;
+        data.set(input.subarray(offset));
+        write = 0;
+        filled = capacity;
+        return;
+      }
+      const end = write + length;
+      if (end <= capacity) {
+        data.set(input.subarray(offset, offset + length), write);
+      } else {
+        const first = capacity - write;
+        data.set(input.subarray(offset, offset + first), write);
+        data.set(input.subarray(offset + first, offset + length), 0);
+      }
+      write = (write + length) % capacity;
+      filled = Math.min(capacity, filled + length);
+    },
+    snapshot(): Float32Array {
+      const out = new Float32Array(filled);
+      if (filled === 0) return out;
+      const start = (write - filled + capacity) % capacity;
+      if (start + filled <= capacity) {
+        out.set(data.subarray(start, start + filled));
+      } else {
+        const first = capacity - start;
+        out.set(data.subarray(start), 0);
+        out.set(data.subarray(0, filled - first), first);
+      }
+      return out;
+    },
+  };
+}
+
+function concatSamples(chunks: Float32Array[]): Float32Array {
+  let total = 0;
+  for (const chunk of chunks) total += chunk.length;
+  const out = new Float32Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
 function audioBufferToWav(buffer: AudioBuffer): Blob {
-  const numChannels = buffer.numberOfChannels;
-  const sampleRate = buffer.sampleRate;
-  const bitsPerSample = 16;
   const channels: Float32Array[] = [];
-  for (let channel = 0; channel < numChannels; channel += 1) {
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
     channels.push(buffer.getChannelData(channel));
   }
+  return floatChannelsToWav(channels, buffer.sampleRate);
+}
+
+function floatChannelsToWav(channels: Float32Array[], sampleRate: number): Blob {
+  const numChannels = Math.max(1, channels.length);
+  const bitsPerSample = 16;
   const length = channels[0]?.length ?? 0;
   const interleaved = new Int16Array(length * numChannels);
   for (let index = 0; index < length; index += 1) {

@@ -280,12 +280,19 @@ function mockVoiceRecorder(
   return { getUserMedia, stopTrack };
 }
 
+interface FakePcmProcessor {
+  onaudioprocess: ((event: {
+    inputBuffer: { getChannelData: (channel: number) => Float32Array; numberOfChannels: number };
+  }) => void) | null;
+}
+
 function mockConversationAudio(
   state: AudioContextState = "running",
   options?: { resumeState?: AudioContextState },
 ) {
   const level = { sample: 128 };
   const contexts: Array<{ resume: ReturnType<typeof vi.fn>; state: AudioContextState }> = [];
+  const processors: FakePcmProcessor[] = [];
   const decodeAudioData = vi.fn(async () => ({
     numberOfChannels: 1,
     sampleRate: 16_000,
@@ -294,6 +301,7 @@ function mockConversationAudio(
 
   class FakeAudioContext {
     state = state;
+    sampleRate = 16_000;
 
     constructor() {
       contexts.push(this);
@@ -301,6 +309,26 @@ function mockConversationAudio(
 
     createMediaStreamSource() {
       return { connect: vi.fn(), disconnect: vi.fn() };
+    }
+
+    createScriptProcessor() {
+      const processor: FakePcmProcessor = { onaudioprocess: null };
+      processors.push(processor);
+      return {
+        ...processor,
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        set onaudioprocess(handler: FakePcmProcessor["onaudioprocess"]) {
+          processor.onaudioprocess = handler;
+        },
+        get onaudioprocess() {
+          return processor.onaudioprocess;
+        },
+      };
+    }
+
+    createGain() {
+      return { gain: { value: 0 }, connect: vi.fn(), disconnect: vi.fn() };
     }
 
     createAnalyser() {
@@ -349,7 +377,7 @@ function mockConversationAudio(
     thinkGraceMs: 30,
     maxUtteranceMs: 5_000,
   });
-  return { level, decodeAudioData, contexts };
+  return { level, decodeAudioData, contexts, processors };
 }
 
 function mockConversationSpeaker() {
@@ -1196,6 +1224,61 @@ describe("ThreadComposer", () => {
       undefined,
       { voiceReply: true },
     ));
+  });
+
+  it("keeps the onset Grok heard before speech was accepted", async () => {
+    mockVoiceRecorder(new Blob(["late"], { type: "audio/webm" }));
+    const { level, processors, decodeAudioData } = mockConversationAudio();
+    const onTranscribeAudio = vi.fn(async () => "hello there");
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        onTranscribeAudio={onTranscribeAudio}
+        placeholder="Type your message..."
+        transcriptionProvider="grok"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Voice conversation" }));
+    expect(await screen.findByLabelText("Listening")).toBeInTheDocument();
+    const processor = processors[0];
+    expect(processor?.onaudioprocess).toEqual(expect.any(Function));
+    const feed = (value: number, count: number) => {
+      const samples = new Float32Array(count);
+      samples.fill(value);
+      processor?.onaudioprocess?.({
+        inputBuffer: {
+          numberOfChannels: 1,
+          getChannelData: () => samples,
+        },
+      });
+    };
+    feed(0.8, 320);
+
+    level.sample = 200;
+    await wait(160);
+    expect(screen.getByLabelText(/Hearing you/)).toBeInTheDocument();
+    feed(0.2, 160);
+    level.sample = 128;
+    await wait(180);
+
+    await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalledTimes(1));
+    const [dataUrl] = onTranscribeAudio.mock.calls[0] ?? [];
+    expect(dataUrl).toMatch(/^data:audio\/wav;base64,/);
+    expect(decodeAudioData).not.toHaveBeenCalled();
+    const bytes = bytesFromDataUrl(dataUrl ?? "");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect(ascii(bytes, 36, 4)).toBe("data");
+    const dataBytes = view.getUint32(40, true);
+    let onset = 0;
+    let continued = 0;
+    for (let offset = 44; offset < 44 + dataBytes; offset += 2) {
+      const sample = Math.abs(view.getInt16(offset, true));
+      if (sample > 20_000) onset += 1;
+      else if (sample > 4_000 && sample < 10_000) continued += 1;
+    }
+    expect(onset).toBe(320);
+    expect(continued).toBe(160);
   });
 
   it("does not open the microphone twice while access is pending", async () => {

@@ -9,11 +9,15 @@ import {
   mediaRecorderConstructor,
   mediaRecorderOptions,
   openVoiceMicrophone,
+  openVoicePcmTap,
   recordingErrorKey,
   transcriptionErrorKey,
   voiceLevelFromSamples,
+  voiceSamplesToWavDataUrl,
   waveformHeightFromLevel,
   type VoiceConversationErrorKey,
+  type VoicePcmTap,
+  type VoicePcmUtterance,
 } from "@/lib/voice-audio";
 import {
   armVoiceOutput,
@@ -120,6 +124,7 @@ let lastLevelPublishAt = 0;
 let lastPublishedPhase: VoiceConversationPhase = "idle";
 let lastPublishedElapsed = "";
 let monitor: VoiceMonitor | null = null;
+let pcmTap: VoicePcmTap | null = null;
 let readOptions: (() => VoiceConversationOptions) | null = null;
 let bindId = 0;
 
@@ -358,6 +363,7 @@ function startMonitor(nextStream: MediaStream): boolean {
     analyser.fftSize = 256;
     analyser.smoothingTimeConstant = 0.68;
     source.connect(analyser);
+    if (readOptions?.().wantsWav) pcmTap = openVoicePcmTap(context, source);
     const next: VoiceMonitor = {
       analyser,
       context,
@@ -484,11 +490,13 @@ function beginCapture(now: number, leadingSpeech: number): void {
   let snapshotted = false;
   let spokenAtStop = 0;
   let durationAtStop = 0;
+  let spokenPcm: VoicePcmUtterance | null = null;
   const snapshot = () => {
     if (snapshotted) return;
     snapshotted = true;
     spokenAtStop = speechMs;
     durationAtStop = Math.max(0, performance.now() - captureStartedAt);
+    spokenPcm = pcmTap?.takeUtterance() ?? null;
   };
   const settle = () => {
     if (settled) return;
@@ -511,6 +519,7 @@ function beginCapture(now: number, leadingSpeech: number): void {
       spokenAtStop,
       mimeType,
       generation,
+      spokenPcm,
     );
   };
   const armFlush = (delayMs: number) => {
@@ -554,6 +563,8 @@ function beginCapture(now: number, leadingSpeech: number): void {
       return;
     }
   }
+  // Copy the pre-decision audio now. Later processor callbacks append to it.
+  pcmTap?.beginUtterance();
   setPhase("capturing");
 }
 
@@ -573,17 +584,19 @@ async function finishCapture(
   spokenMs: number,
   mimeType: string,
   generation: number,
+  pcm: VoicePcmUtterance | null,
 ): Promise<void> {
   try {
     if (!stream || generation !== sessionGeneration) return;
-    if (recorded.length === 0 || spokenMs < timings.minSpeechMs) {
-      if (recorded.length === 0 && spokenMs >= timings.minSpeechMs) {
+    const options = readOptions?.();
+    const pcmUtterance = options?.wantsWav && pcm && pcm.samples.length > 0 ? pcm : null;
+    if ((recorded.length === 0 && !pcmUtterance) || spokenMs < timings.minSpeechMs) {
+      if (recorded.length === 0 && !pcmUtterance && spokenMs >= timings.minSpeechMs) {
         readOptions?.().onError("failed");
       }
       resumeAfterUtterance();
       return;
     }
-    const options = readOptions?.();
     if (!options?.onTranscribeAudio) {
       resumeAfterUtterance();
       return;
@@ -591,11 +604,16 @@ async function finishCapture(
     setPhase("transcribing");
     try {
       const blob = new Blob(recorded, { type: mimeType });
-      const dataUrl = options.wantsWav
-        ? await convertBlobToWav(blob)
-        : await blobToDataUrl(blob);
+      const dataUrl = pcmUtterance
+        ? await voiceSamplesToWavDataUrl(pcmUtterance.samples, pcmUtterance.sampleRate)
+        : options.wantsWav
+          ? await convertBlobToWav(blob)
+          : await blobToDataUrl(blob);
+      const reportedDuration = pcmUtterance
+        ? Math.round((pcmUtterance.samples.length / Math.max(1, pcmUtterance.sampleRate)) * 1000)
+        : durationMs;
       if (!stream || generation !== sessionGeneration) return;
-      const text = (await options.onTranscribeAudio(dataUrl, { durationMs })).trim();
+      const text = (await options.onTranscribeAudio(dataUrl, { durationMs: reportedDuration })).trim();
       if (!stream || generation !== sessionGeneration) return;
       if (!text) {
         resumeAfterUtterance();
@@ -665,6 +683,8 @@ function resumeAfterUtterance(): void {
 }
 
 function releaseMonitor(): void {
+  pcmTap?.close();
+  pcmTap = null;
   const current = monitor;
   monitor = null;
   if (!current) return;
