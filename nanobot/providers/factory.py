@@ -246,6 +246,10 @@ def _make_provider_core(
             provider_name=provider_name,
         )
 
+    if p is not None and p.wake_on_lan is not None:
+        provider.wake_on_lan = p.wake_on_lan
+        provider.wake_api_base = provider.api_base or config.get_api_base(model, preset=preset)
+
     provider.generation = preset.to_generation_settings()
     return provider
 
@@ -327,6 +331,13 @@ def build_unconfigured_provider_snapshot(config: Config, setup_error: str) -> Pr
     )
 
 
+def _wake_on_lan_signature(provider: ProviderConfig | None) -> tuple[object, ...] | None:
+    wake = provider.wake_on_lan if provider is not None else None
+    if wake is None:
+        return None
+    return (wake.mac, wake.broadcast, wake.port, wake.timeout_s, wake.network_delay_s)
+
+
 def provider_signature(
     config: Config,
     *,
@@ -359,6 +370,7 @@ def provider_signature(
             fallback.context_window_tokens,
             getattr(fp, "proxy", None) if fp else None,
             fp.thinking_style if fp else None,
+            _wake_on_lan_signature(fp),
         )
 
     provider_name = config.get_provider_name(resolved.model, preset=resolved)
@@ -380,6 +392,7 @@ def provider_signature(
         resolved.context_window_tokens,
         getattr(p, "proxy", None) if p else None,
         p.thinking_style if p else None,
+        _wake_on_lan_signature(p),
         tuple(
             fallback if isinstance(fallback, str) else None
             for fallback in config.agents.defaults.fallback_models

@@ -32,6 +32,7 @@ from nanobot.providers.image_generation import (
     get_image_gen_provider,
     image_gen_provider_configs,
 )
+from nanobot.providers.wake_on_lan import WakeOnLanError, ensure_model_host_awake
 from nanobot.security.workspace_access import current_tool_workspace
 from nanobot.security.workspace_policy import WorkspaceBoundaryError, resolve_allowed_path
 from nanobot.utils.artifacts import (
@@ -198,6 +199,7 @@ class ImageGenerationTool(Tool):
 
         try:
             refs = self._resolve_reference_images(reference_images)
+            await self._wake_provider_host(client)
             artifacts: list[dict[str, Any]] = []
             while len(artifacts) < requested:
                 response = await client.generate(
@@ -220,8 +222,18 @@ class ImageGenerationTool(Tool):
                     if len(artifacts) >= requested:
                         break
             return generated_image_tool_result(artifacts)
-        except (ArtifactError, ImageGenerationError, OSError) as exc:
+        except (ArtifactError, ImageGenerationError, OSError, WakeOnLanError) as exc:
             return ToolResult.error(f"Error: {exc}")
+
+    async def _wake_provider_host(self, client: ImageGenerationProvider) -> None:
+        provider = self._provider_config()
+        if provider is None or provider.wake_on_lan is None:
+            return
+        await ensure_model_host_awake(
+            provider.wake_on_lan,
+            client.api_base or provider.api_base,
+            provider_name=self.config.provider,
+        )
 
 
 async def reload_image_generation_tool(state: Any, registry: ToolRegistry) -> dict[str, Any]:

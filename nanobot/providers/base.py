@@ -30,6 +30,7 @@ from nanobot.events import (
 from nanobot.utils.helpers import sanitize_surrogates_deep
 
 if TYPE_CHECKING:
+    from nanobot.config.schema import WakeOnLanConfig
     from nanobot.llm_usage.models import LLMCallRecord
 
 STREAM_IDLE_TIMEOUT_ENV = "NANOBOT_STREAM_IDLE_TIMEOUT_S"
@@ -723,6 +724,8 @@ class LLMProvider(ABC):
         self.api_key = api_key
         self.api_base = api_base
         self.provider_name = provider_name
+        self.wake_on_lan: WakeOnLanConfig | None = None
+        self.wake_api_base: str | None = None
         self.generation: GenerationSettings = GenerationSettings()
         self._llm_call_observer: LLMCallObserver | None = None
 
@@ -1811,6 +1814,9 @@ class LLMProvider(ABC):
         last_response: LLMResponse | None = None
         last_error_key: str | None = None
         identical_error_count = 0
+        wake_error = await self._wake_model_host(on_retry_wait)
+        if wake_error is not None:
+            return wake_error
 
         async def _finish_retry_status(
             state: Literal["recovered", "cleared"],
@@ -1964,6 +1970,12 @@ class LLMProvider(ABC):
                 int(round(delay)),
                 (response.content or "")[:120].lower(),
             )
+            if self.public_error_kind(response) in {"connection", "timeout"}:
+                # The model computer can sleep after the opening probe, including
+                # during a request that then times out. Wake again before retrying.
+                wake_error = await self._wake_model_host(on_retry_wait)
+                if wake_error is not None:
+                    return wake_error
             await self._sleep_with_heartbeat(
                 delay,
                 attempt=attempt,
@@ -1975,6 +1987,33 @@ class LLMProvider(ABC):
             )
 
         return last_response if last_response is not None else await call(**kw)  # pyright: ignore[reportUnnecessaryComparison]
+
+    async def _wake_model_host(
+        self,
+        on_retry_wait: RetryEventCallback | None,
+    ) -> LLMResponse | None:
+        """Wake a configured sleeping model host before the next attempt."""
+        config = self.wake_on_lan
+        if config is None:
+            return None
+        from nanobot.providers.wake_on_lan import WakeOnLanError, ensure_model_host_awake
+
+        try:
+            await ensure_model_host_awake(
+                config,
+                self.wake_api_base or self.api_base,
+                provider_name=self.provider_name,
+                notify=on_retry_wait,
+            )
+        except WakeOnLanError as exc:
+            logger.warning("{}", exc)
+            return LLMResponse(
+                content=f"Error calling LLM: {exc}",
+                finish_reason="error",
+                error_kind="connection",
+                error_should_retry=False,
+            )
+        return None
 
     @abstractmethod
     def get_default_model(self) -> str:

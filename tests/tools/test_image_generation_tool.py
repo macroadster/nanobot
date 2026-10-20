@@ -8,7 +8,7 @@ import pytest
 
 from nanobot.agent.tools.image_generation import ImageGenerationTool
 from nanobot.config.loader import set_config_path
-from nanobot.config.schema import ImageGenerationToolConfig, ProviderConfig
+from nanobot.config.schema import ImageGenerationToolConfig, ProviderConfig, WakeOnLanConfig
 from nanobot.providers.image_generation import GeneratedImageResponse
 
 PNG_BYTES = (
@@ -28,6 +28,7 @@ class FakeImageClient:
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
+        self.api_base = kwargs.get("api_base")
         self.calls: list[dict[str, Any]] = []
         self.instances.append(self)
 
@@ -228,3 +229,85 @@ async def test_generate_image_tool_rejects_reference_outside_workspace(tmp_path:
     result = await tool.execute(prompt="edit", reference_images=[str(outside)])
 
     assert "reference_images must be inside the workspace" in result
+
+
+@pytest.mark.asyncio
+async def test_generate_image_tool_wakes_configured_host_before_generate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    woken: list[tuple[str, str | None, str | None]] = []
+
+    async def fake_wake(
+        config: WakeOnLanConfig,
+        api_base: str | None,
+        *,
+        provider_name: str | None = None,
+        notify: Any = None,
+    ) -> None:
+        del notify
+        woken.append((config.mac, api_base, provider_name))
+
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "ollama" else None,
+    )
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.ensure_model_host_awake",
+        fake_wake,
+    )
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(enabled=True, provider="ollama", model="llama3.2"),
+        provider_configs={
+            "ollama": ProviderConfig(
+                api_base="http://192.168.1.20:11434/v1",
+                wake_on_lan=WakeOnLanConfig(mac="AA-BB-CC-DD-EE-FF"),
+            ),
+        },
+    )
+
+    result = await tool.execute(prompt="draw a cat")
+
+    assert json.loads(result)["artifacts"]
+    assert woken == [("aa:bb:cc:dd:ee:ff", "http://192.168.1.20:11434/v1", "ollama")]
+    assert len(FakeImageClient.instances[0].calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_image_tool_reports_wake_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.providers.wake_on_lan import WakeOnLanError
+
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "ollama" else None,
+    )
+
+    async def fail_wake(*_args: Any, **_kwargs: Any) -> None:
+        raise WakeOnLanError("model host stayed asleep")
+
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.ensure_model_host_awake",
+        fail_wake,
+    )
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(enabled=True, provider="ollama", model="llama3.2"),
+        provider_configs={
+            "ollama": ProviderConfig(
+                api_base="http://192.168.1.20:11434/v1",
+                wake_on_lan=WakeOnLanConfig(mac="aa:bb:cc:dd:ee:ff"),
+            ),
+        },
+    )
+
+    result = await tool.execute(prompt="draw a cat")
+
+    assert result == "Error: model host stayed asleep"
+    assert FakeImageClient.instances[0].calls == []

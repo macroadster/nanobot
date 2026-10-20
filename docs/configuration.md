@@ -57,6 +57,7 @@ If the WebUI does not expose the option you need, start from the task below. Mos
 | Task | First keys to check | Verify with | Deep dive |
 |---|---|---|---|
 | Make the first model reply work | `providers.<name>.apiKey`, optional `providers.<name>.apiBase`, `modelPresets.<preset>`, `agents.defaults.modelPreset` | `nanobot status`, then `nanobot agent -m "Hello!"` | [Providers](#providers), [Model Presets](#model-presets) |
+| Wake a sleeping model computer | `providers.<name>.apiBase`, `providers.<name>.wakeOnLan.mac` | Let the model computer sleep, then send one chat message | [Wake-on-LAN](#wake-on-lan) |
 | Add fallback models | `modelPresets.<fallback>`, `agents.defaults.fallbackModels` | `nanobot status`, then a normal agent run | [Model Fallbacks](#model-fallbacks) |
 | Keep secrets out of the config file | `${ENV_VAR}` placeholders inside any string value | Start nanobot from the same environment that sets the variable | [Environment Variables for Secrets](#environment-variables-for-secrets) |
 | Open the bundled WebUI | `channels.websocket.enabled`, optional `channels.websocket.port`, `channels.websocket.tokenIssueSecret` | `nanobot webui` | [Channel Settings](#channel-settings), [WebSocket docs](./websocket.md) |
@@ -1297,6 +1298,38 @@ ollama run llama3.2
 ```
 
 > `provider: "auto"` also works when `providers.ollama.apiBase` is configured, but pinning `"provider": "ollama"` inside the preset is the clearest option.
+
+If that computer sleeps when it is idle, add [Wake-on-LAN](#wake-on-lan).
+
+</details>
+
+<a id="wake-on-lan"></a>
+<details>
+<summary><b>Wake-on-LAN</b></summary>
+
+Use this when the model runs on another computer that sleeps after it has been idle. nanobot sends a Wake-on-LAN magic packet from the computer running the gateway, then waits until the model API accepts a connection.
+
+The model computer needs Wake-on-LAN enabled in its firmware and operating system. `apiBase` must be that computer's address, including the API port. A `localhost` API base probes the computer running nanobot.
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "apiBase": "http://192.168.1.20:11434/v1",
+      "wakeOnLan": {
+        "mac": "AA:BB:CC:DD:EE:FF",
+        "broadcast": "192.168.1.255",
+        "port": 9,
+        "timeoutS": 90
+      }
+    }
+  }
+}
+```
+
+`mac` is the model computer's network adapter. `broadcast` defaults to `255.255.255.255`. Set it to the subnet broadcast, such as `192.168.1.255`, when the default does not reach the sleeping computer. `port` is the UDP magic-packet port and defaults to `9`. The model API port stays in `apiBase`. `timeoutS` defaults to `90` and is how long nanobot waits for the API port to accept a connection. `networkDelayS` defaults to `15`: after the magic packet, nanobot waits that long before using the host, so the network can finish coming back.
+
+Before each model request, and before image generation that uses the same provider, nanobot probes that API port. When the computer accepts or refuses the connection, the request proceeds. When the computer does not answer, nanobot sends the magic packet and keeps probing until the port accepts a connection or `timeoutS` elapses. The packet is sent again every few seconds while waiting. The same `wakeOnLan` object works on any provider, including `lm_studio`, `vllm`, and a custom OpenAI-compatible endpoint.
 
 </details>
 

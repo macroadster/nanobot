@@ -1,6 +1,7 @@
 """Configuration schema using Pydantic."""
 from __future__ import annotations
 
+import ipaddress
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
@@ -231,6 +232,48 @@ class AgentsConfig(Base):
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
 
 
+class WakeOnLanConfig(Base):
+    """Wake a sleeping computer that hosts this provider's model.
+
+    ``mac`` is the model computer's network adapter. ``broadcast`` and ``port``
+    are the UDP destination for the magic packet, not the model API port. The
+    API host and port come from the provider ``api_base``.
+    """
+
+    _MAC_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"^(?:"
+        r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}"
+        r"|[0-9A-Fa-f]{12}"
+        r"|(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}"
+        r")$"
+    )
+
+    mac: str
+    broadcast: str = "255.255.255.255"
+    port: int = Field(default=9, ge=1, le=65535)  # UDP port for the magic packet
+    timeout_s: float = Field(default=90.0, gt=0, le=600)  # How long to wait for the API port
+    network_delay_s: float = Field(default=15.0, ge=0, le=120)  # Wait after the packet before using the host
+
+    @field_validator("mac")
+    @classmethod
+    def _normalize_mac(cls, value: str) -> str:
+        text = value.strip()
+        if cls._MAC_RE.fullmatch(text) is None:
+            raise ValueError("mac must be a MAC address such as aa:bb:cc:dd:ee:ff")
+        hex_chars = re.sub(r"[^0-9A-Fa-f]", "", text).lower()
+        return ":".join(hex_chars[index:index + 2] for index in range(0, 12, 2))
+
+    @field_validator("broadcast")
+    @classmethod
+    def _validate_broadcast(cls, value: str) -> str:
+        try:
+            return str(ipaddress.ip_address(value.strip()))
+        except ValueError:
+            raise ValueError(
+                "broadcast must be an IP address, such as 255.255.255.255 or 192.168.1.255"
+            ) from None
+
+
 class ProviderConfig(Base):
     """LLM provider configuration."""
 
@@ -239,6 +282,10 @@ class ProviderConfig(Base):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    wake_on_lan: WakeOnLanConfig | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )  # Wake the model computer when its API port does not answer
     api_key: str | None = Field(default=None, repr=False)
     api_base: str | None = None
     api_type: Literal["auto", "chat_completions", "responses"] = "auto"  # Request API surface

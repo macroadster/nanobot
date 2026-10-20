@@ -485,7 +485,7 @@ Start Ollama separately, then point nanobot at the OpenAI-compatible endpoint.
 }
 ```
 
-Most Ollama setups do not require an API key.
+Most Ollama setups do not require an API key. If Ollama runs on another computer that sleeps when idle, set `wakeOnLan` on this provider. See [Wake-on-LAN](./configuration.md#wake-on-lan).
 
 Ollama renders the OpenAI-compatible messages and tools through each model's chat
 template. If ordinary model responses are fast but tool-using turns show low prompt
