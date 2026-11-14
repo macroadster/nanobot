@@ -249,7 +249,7 @@ Tracing covers the providers that go through nanobot's OpenAI-compatible client 
 ## Providers
 
 > [!TIP]
-> - **Voice transcription**: Voice messages and WebUI microphone input use the shared top-level `transcription` settings. The default `transcription.provider` value is `"groq"`; set it to `"grok"` for Grok Voice speech-to-text, `"openai"` for OpenAI Whisper, `"openrouter"` for OpenRouter speech-to-text models, `"xiaomi_mimo"` for Xiaomi MiMo ASR, or `"assemblyai"` for AssemblyAI. API keys still live in the matching `providers.<provider>` config. Spoken replies use Grok Voice whenever `voice.speakReplies` is on and Grok credentials are available.
+> - **Voice transcription**: Voice messages and WebUI microphone input use the shared top-level `transcription` settings. The default `transcription.provider` value is `"groq"`; set it to `"grok"` for Grok Voice speech-to-text, `"openai"` for OpenAI Whisper, `"openrouter"` for OpenRouter speech-to-text models, `"xiaomi_mimo"` for Xiaomi MiMo ASR, or `"assemblyai"` for AssemblyAI. API keys still live in the matching `providers.<provider>` config. Spoken replies use Grok Voice when `voice.speakReplies` is on and Grok credentials are available, or a local Kokoro endpoint when `voice.provider` is `"kokoro"` (see [Kokoro (local) spoken replies](#kokoro-local-spoken-replies)).
 > - **MiniMax Coding Plan**: Exclusive discount links for the nanobot community: [Overseas](https://platform.minimax.io/subscribe/coding-plan?code=9txpdXw04g&source=link) · [Mainland China](https://platform.minimaxi.com/subscribe/token-plan?code=GILTJpMTqZ&source=link)
 > - **MiniMax (Mainland China)**: If your API key is from MiniMax's mainland China platform (minimaxi.com), set `"apiBase": "https://api.minimaxi.com/v1"` in your minimax provider config.
 > - **MiniMax thinking mode**: `providers.minimaxAnthropic` is the config block for `reasoningEffort` / thinking mode. MiniMax exposes that capability through its Anthropic-compatible endpoint, so nanobot keeps it as a separate provider instead of guessing MiniMax-specific thinking parameters on the generic OpenAI-compatible `minimax` endpoint. It uses the same `MINIMAX_API_KEY`. Default Anthropic-compatible base URL: `https://api.minimax.io/anthropic`; for mainland China use `https://api.minimaxi.com/anthropic`.
@@ -1766,6 +1766,43 @@ Discord voice messages and WebUI microphone turns can be answered out loud. The 
 Discord treats audio attachments, including native voice messages, as speech. A successful transcript is what the agent sees, and the same turn gets a spoken reply when Grok credentials are configured. In the WebUI, the microphone button starts a hands-free conversation: a pause sends what you said, the reply plays aloud, and the microphone listens again when playback finishes. Talk during a reply to interrupt it. The same clip stays on an audio player. Typed messages stay text.
 
 Credentials are `providers.grok.apiKey`, `XAI_API_KEY`, or a `grok login` token in `~/.grok/auth.json`. Set `voice.speakReplies` to `false` to keep transcripts without spoken answers.
+
+## Kokoro (local) spoken replies
+
+For a fully local voice stack, point spoken replies at an OpenAI-compatible `/v1/audio/speech` endpoint serving [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), such as a local [speaches](https://github.com/speaches-ai/speaches) server. Set `voice.provider` to `kokoro` and configure the endpoint under `providers.kokoro`:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "apiBase": "http://nanobot-audio.nanobot.svc.cluster.local:8000/v1",
+      "apiKey": "local"
+    },
+    "kokoro": {
+      "apiBase": "http://nanobot-audio.nanobot.svc.cluster.local:8000/v1"
+    }
+  },
+  "transcription": {
+    "provider": "openai",
+    "model": "Systran/faster-whisper-small"
+  },
+  "voice": {
+    "enabled": true,
+    "speakReplies": true,
+    "provider": "kokoro",
+    "voiceId": "af_heart",
+    "model": "speaches-ai/Kokoro-82M-v1.0-ONNX"
+  }
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `provider` | `"grok"` | TTS backend: `grok` (xAI Grok Voice) or `kokoro` (OpenAI-compatible endpoint). |
+| `voiceId` | `"eve"` | Grok voice id, or a Kokoro voice id such as `af_heart`, `af_bella`, `am_michael`. If left at the Grok default `eve` with `provider: "kokoro"`, nanobot uses `af_heart` instead. |
+| `model` | `"speaches-ai/Kokoro-82M-v1.0-ONNX"` | TTS model id passed to the endpoint. Only used by `provider: "kokoro"`. |
+
+Kokoro needs no API key; `providers.kokoro.apiKey` is optional and only sent when set. The same example points `transcription` at the same local server using the `openai` provider with a dummy `apiKey` (speaches ignores it). Set `voice.speakReplies` to `false` to keep transcripts without spoken answers. `voice.language` is passed to Grok only and ignored by Kokoro.
 
 ## Channel Settings
 

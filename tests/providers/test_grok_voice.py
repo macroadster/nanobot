@@ -159,3 +159,95 @@ async def test_synthesize_voice_reply_writes_a_file_only_for_voice_turns(
     assert path.parent == tmp_path
     assert path.read_bytes() == b"ID3reply"
     assert path.suffix == ".mp3"
+
+
+# --- Kokoro (local OpenAI-compatible /v1/audio/speech) ---------------------
+
+from nanobot.providers.speech import KokoroTextToSpeech, kokoro_speech_url  # noqa: E402
+
+
+def test_kokoro_speech_url_accepts_base_or_full_url() -> None:
+    assert kokoro_speech_url("http://audio:8000/v1") == "http://audio:8000/v1/audio/speech"
+    assert kokoro_speech_url("http://audio:8000/v1/audio/speech") == "http://audio:8000/v1/audio/speech"
+    assert kokoro_speech_url(None) == "http://localhost:8000/v1/audio/speech"
+
+
+def test_voice_config_resolves_kokoro_without_api_key() -> None:
+    config = Config()
+    config.voice.provider = "kokoro"
+    config.voice.voice_id = "am_michael"
+    config.providers.kokoro.api_base = "http://nanobot-audio.nanobot.svc.cluster.local:8000/v1"
+
+    resolved = resolve_voice_config(config)
+
+    assert resolved.provider == "kokoro"
+    assert resolved.configured is True
+    assert resolved.voice_id == "am_michael"
+    assert resolved.api_base.endswith("/v1")
+    assert resolved.model == "speaches-ai/Kokoro-82M-v1.0-ONNX"
+
+
+def test_voice_config_kokoro_swaps_grok_default_voice() -> None:
+    config = Config()
+    config.voice.provider = "kokoro"  # voice_id left at the grok default "eve"
+    resolved = resolve_voice_config(config)
+    assert resolved.voice_id == "af_heart"
+
+
+def test_voice_config_rejects_unknown_provider() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        Config(voice={"provider": "elevenlabs"})
+
+
+@pytest.mark.asyncio
+async def test_kokoro_tts_posts_openai_compatible_body() -> None:
+    synth = KokoroTextToSpeech(
+        api_base="http://nanobot-audio:8000/v1",
+        model="speaches-ai/Kokoro-82M-v1.0-ONNX",
+        voice_id="af_heart",
+    )
+    assert synth.api_url == "http://nanobot-audio:8000/v1/audio/speech"
+    request = httpx.Request("POST", synth.api_url)
+    response = httpx.Response(
+        200,
+        content=b"ID3kokoro",
+        headers={"content-type": "audio/mpeg"},
+        request=request,
+    )
+
+    with patch("httpx.AsyncClient.post", AsyncMock(return_value=response)) as post:
+        audio, suffix = await synth.synthesize("Hello there")
+
+    assert audio == b"ID3kokoro"
+    assert suffix == ".mp3"
+    sent = post.await_args.kwargs["json"]
+    assert sent == {
+        "model": "speaches-ai/Kokoro-82M-v1.0-ONNX",
+        "input": "Hello there",
+        "voice": "af_heart",
+        "response_format": "mp3",
+    }
+
+
+@pytest.mark.asyncio
+async def test_synthesize_voice_reply_uses_kokoro_when_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = Config()
+    config.voice.provider = "kokoro"
+    config.voice.voice_id = "af_heart"
+    config.providers.kokoro.api_base = "http://nanobot-audio:8000/v1"
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: config)
+    monkeypatch.setattr("nanobot.audio.speech.get_media_dir", lambda _name: tmp_path)
+
+    async def fake_synthesize(self, text: str) -> tuple[bytes, str]:  # noqa: ARG001
+        return b"kokoro-audio", ".mp3"
+
+    monkeypatch.setattr(KokoroTextToSpeech, "synthesize", fake_synthesize)
+
+    path = await synthesize_voice_reply("Hello", {VOICE_REPLY_META: True})
+    assert path is not None
+    assert path.read_bytes() == b"kokoro-audio"

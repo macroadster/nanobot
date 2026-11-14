@@ -1,8 +1,11 @@
 """Spoken replies for Discord voice messages and WebUI voice turns.
 
-Grok Voice text-to-speech is the only backend. Inbound speech still uses the
-shared transcription service; this module decides when a finished answer
-should be spoken and writes the audio file.
+Inbound speech still uses the shared transcription service; this module
+decides when a finished answer should be spoken and writes the audio file.
+
+The TTS backend is selected with ``voice.provider``: ``grok`` (xAI Grok Voice,
+the default) or ``kokoro`` (an OpenAI-compatible ``/v1/audio/speech`` endpoint,
+such as a local speaches server, configured under ``providers.kokoro``).
 """
 
 from __future__ import annotations
@@ -22,9 +25,12 @@ from nanobot.audio.transcription import (
 )
 from nanobot.config.paths import get_media_dir
 from nanobot.config.schema import Config
-from nanobot.providers.speech import GrokTextToSpeech
+from nanobot.providers.speech import GrokTextToSpeech, KokoroTextToSpeech
 
 VOICE_REPLY_META = "grok_voice_reply"
+_KOKORO_DEFAULT_API_BASE = "http://localhost:8000/v1"
+_KOKORO_DEFAULT_MODEL = "speaches-ai/Kokoro-82M-v1.0-ONNX"
+_KOKORO_DEFAULT_VOICE = "af_heart"
 _CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
 _MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _LANGUAGE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z]{2})?$|^auto$")
@@ -39,9 +45,14 @@ class EffectiveVoiceConfig:
     api_key: str
     api_base: str
     max_chars: int
+    provider: str = "grok"
+    model: str | None = None
 
     @property
     def configured(self) -> bool:
+        if self.provider == "kokoro":
+            # Local Kokoro servers typically do not require a key.
+            return bool(self.api_base)
         return bool(self.api_key)
 
 
@@ -74,9 +85,31 @@ def _tts_language(voice_language: str | None, transcription_language: str | None
 
 
 def resolve_voice_config(config: Config) -> EffectiveVoiceConfig:
-    """Resolve Grok Voice reply settings and credentials."""
+    """Resolve spoken-reply settings and credentials for the configured provider."""
     voice = config.voice
+    provider = (getattr(voice, "provider", None) or "grok").strip().lower()
     transcription_language = getattr(config.transcription, "language", None)
+    if provider == "kokoro":
+        api_base = (
+            transcription_provider_api_base(config, "kokoro")
+            or _KOKORO_DEFAULT_API_BASE
+        )
+        api_key = transcription_provider_api_key(config, "kokoro")
+        voice_id = (voice.voice_id or "").strip()
+        # Grok's default voice id is not a Kokoro voice; swap in a Kokoro default.
+        if not voice_id or voice_id == "eve":
+            voice_id = _KOKORO_DEFAULT_VOICE
+        return EffectiveVoiceConfig(
+            enabled=bool(voice.enabled),
+            speak_replies=bool(voice.speak_replies),
+            voice_id=voice_id,
+            language=_tts_language(voice.language, transcription_language),
+            api_key=api_key,
+            api_base=api_base,
+            max_chars=int(voice.max_chars),
+            provider="kokoro",
+            model=(getattr(voice, "model", None) or None) or _KOKORO_DEFAULT_MODEL,
+        )
     return EffectiveVoiceConfig(
         enabled=bool(voice.enabled),
         speak_replies=bool(voice.speak_replies),
@@ -85,6 +118,8 @@ def resolve_voice_config(config: Config) -> EffectiveVoiceConfig:
         api_key=transcription_provider_api_key(config, "grok"),
         api_base=transcription_provider_api_base(config, "grok"),
         max_chars=int(voice.max_chars),
+        provider="grok",
+        model=None,
     )
 
 
@@ -100,26 +135,39 @@ async def synthesize_voice_reply(
 
         resolved = resolve_voice_config(load_config())
     except Exception:
-        logger.exception("Grok voice config could not be loaded")
+        logger.exception("voice config could not be loaded")
         return None
     if not resolved.enabled or not resolved.speak_replies or not resolved.configured:
         return None
     spoken = prepare_speech_text(text, resolved.max_chars)
     if not spoken:
         return None
-    audio, suffix = await GrokTextToSpeech(
-        api_key=resolved.api_key,
-        api_base=resolved.api_base or None,
-        voice_id=resolved.voice_id,
-        language=resolved.language,
-    ).synthesize(spoken)
+    if resolved.provider == "kokoro":
+        audio, suffix = await KokoroTextToSpeech(
+            api_key=resolved.api_key or None,
+            api_base=resolved.api_base or None,
+            model=resolved.model,
+            voice_id=resolved.voice_id,
+        ).synthesize(spoken)
+    else:
+        audio, suffix = await GrokTextToSpeech(
+            api_key=resolved.api_key,
+            api_base=resolved.api_base or None,
+            voice_id=resolved.voice_id,
+            language=resolved.language,
+        ).synthesize(spoken)
     if not audio:
         return None
     path = get_media_dir("voice") / f"voice-{uuid.uuid4().hex}{suffix}"
     try:
         path.write_bytes(audio)
     except OSError:
-        logger.exception("Failed to store Grok voice reply")
+        logger.exception("Failed to store {} voice reply", resolved.provider)
         return None
-    logger.info("Synthesized Grok voice reply ({} bytes, voice={})", len(audio), resolved.voice_id)
+    logger.info(
+        "Synthesized {} voice reply ({} bytes, voice={})",
+        resolved.provider,
+        len(audio),
+        resolved.voice_id,
+    )
     return path

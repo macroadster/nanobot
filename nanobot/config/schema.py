@@ -54,18 +54,47 @@ class TranscriptionConfig(Base):
 
 
 class VoiceConfig(Base):
-    """Spoken replies using Grok Voice text-to-speech.
+    """Spoken replies for Discord voice messages and WebUI voice turns.
 
     Inbound speech still uses ``transcription``. When a Discord voice message
-    or a WebUI voice turn is answered, nanobot speaks the reply with
-    ``providers.grok`` credentials.
+    or a WebUI voice turn is answered, nanobot speaks the reply with the
+    configured ``provider``:
+
+    - ``grok`` (default): xAI Grok Voice text-to-speech, using
+      ``providers.grok`` credentials.
+    - ``kokoro``: an OpenAI-compatible ``/v1/audio/speech`` endpoint serving
+      Kokoro, such as a local speaches server. Endpoint and credentials
+      come from ``providers.kokoro``.
     """
 
     enabled: bool = True
     speak_replies: bool = True
+    provider: str = "grok"
     voice_id: str = "eve"
     language: str | None = None
+    model: str | None = None
     max_chars: int = Field(default=4000, ge=1, le=60_000)
+
+    @field_validator("provider")
+    @classmethod
+    def _normalize_provider(cls, value: str) -> str:
+        cleaned = (value or "").strip().lower() or "grok"
+        if cleaned not in {"grok", "kokoro"}:
+            raise ValueError("voice provider must be one of: grok, kokoro")
+        return cleaned
+
+    @field_validator("model")
+    @classmethod
+    def _normalize_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", cleaned):
+            raise ValueError("voice model must look like a model id such as speaches-ai/Kokoro-82M-v1.0-ONNX")
+        return cleaned
+
 
     @field_validator("voice_id")
     @classmethod
@@ -378,6 +407,9 @@ class ProvidersConfig(Base):
     grok: ProviderConfig = Field(
         default_factory=ProviderConfig
     )  # Grok / xAI (XAI_API_KEY or OIDC via `grok login`; optional apiBase override)
+    kokoro: ProviderConfig = Field(
+        default_factory=ProviderConfig
+    )  # Kokoro TTS via an OpenAI-compatible /v1/audio/speech endpoint (e.g. local speaches; apiBase, optional apiKey)
     qianfan: ProviderConfig = Field(default_factory=ProviderConfig)  # Qianfan (百度千帆)
     nvidia: ProviderConfig = Field(default_factory=ProviderConfig)  # NVIDIA NIM (nvapi- keys)
     opencode: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenCode Zen (canonical provider id)
