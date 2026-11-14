@@ -874,7 +874,7 @@ class AgentRunner:
         kwargs = self._build_request_kwargs(
             spec,
             messages,
-            tools=tool_definitions,
+            tools=request_state.tool_definitions,
         )
         wants_streaming = hook.wants_streaming()
         provider_context = replace(

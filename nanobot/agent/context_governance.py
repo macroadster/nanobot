@@ -624,6 +624,11 @@ class ContextGovernor:
     ) -> tuple[list[dict[str, Any]], ProviderCallContext | None]:
         """Prepare or compact and record the exact provider payload."""
         prepared = self.prepare_messages_for_model(state.config, messages)
+        tool_definitions = self.fit_tool_definitions(
+            state.config,
+            prepared,
+            tool_definitions,
+        )
         model_messages: list[dict[str, Any]] | None = prepared
         supplemental_messages: list[dict[str, Any]] | None = None
         request_context_tokens = None
@@ -695,6 +700,123 @@ class ContextGovernor:
         state.messages = deepcopy(prepared)
         state.tool_definitions = deepcopy(tool_definitions)
         return prepared, provider_context
+
+    def fit_tool_definitions(
+        self,
+        config: ContextGovernanceConfig,
+        messages: list[dict[str, Any]],
+        tool_definitions: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        """Drop tool schemas that cannot fit this model's input budget.
+
+        Built-in tools are kept ahead of MCP schemas. A large context window
+        keeps the full list, so Grok-sized sessions are unchanged. A 32k
+        window keeps as many schemas as the fixed prompt allows.
+        """
+        if not tool_definitions or self.input_budget(config) <= 0:
+            return tool_definitions
+        pinned = self._pinned_messages(messages)
+        if not self._over_budget(config, pinned, tool_definitions):
+            return tool_definitions
+
+        fitted = self._pack_tool_definitions(config, pinned, tool_definitions)
+        omitted = len(tool_definitions) - len(fitted)
+        if omitted <= 0:
+            return tool_definitions
+        logger.info(
+            "Omitted {} of {} tool schemas for {} so the request fits the {}-token input budget",
+            omitted,
+            len(tool_definitions),
+            config.session_key or "default",
+            self.input_budget(config),
+        )
+        return fitted
+
+    @staticmethod
+    def _pinned_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return the system prefix plus the latest user message.
+
+        History compaction can shrink everything between those anchors. Tool
+        schemas have to fit beside them or the request cannot succeed.
+        """
+        pinned: list[dict[str, Any]] = []
+        for message in messages:
+            if message.get("role") not in {"system", "developer"}:
+                break
+            pinned.append(message)
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+            if all(message is not item for item in pinned):
+                pinned.append(message)
+            break
+        return pinned or list(messages)
+
+    def _over_budget(
+        self,
+        config: ContextGovernanceConfig,
+        messages: list[dict[str, Any]],
+        tool_definitions: list[dict[str, Any]] | None,
+    ) -> bool:
+        budget = self.input_budget(config)
+        if budget <= 0:
+            return False
+        estimated, _source = estimate_prompt_tokens_chain(
+            config.provider,
+            config.model,
+            messages,
+            tool_definitions,
+        )
+        return estimated > budget
+
+    def _pack_tool_definitions(
+        self,
+        config: ContextGovernanceConfig,
+        messages: list[dict[str, Any]],
+        tool_definitions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        builtins = [
+            tool for tool in tool_definitions
+            if not self._tool_schema_name(tool).startswith("mcp_")
+        ]
+        mcp_tools = [
+            tool for tool in tool_definitions
+            if self._tool_schema_name(tool).startswith("mcp_")
+        ]
+        costs: dict[int, int] = {}
+
+        def cost(tool: dict[str, Any]) -> int:
+            key = id(tool)
+            cached = costs.get(key)
+            if cached is None:
+                cached, _source = estimate_prompt_tokens_chain(
+                    config.provider,
+                    config.model,
+                    [{"role": "user", "content": ""}],
+                    [tool],
+                )
+                costs[key] = cached
+            return cached
+
+        selected = list(builtins)
+        while selected and self._over_budget(config, messages, selected):
+            largest = max(selected, key=cost)
+            selected.remove(largest)
+        for tool in sorted(mcp_tools, key=cost):
+            if not self._over_budget(config, messages, [*selected, tool]):
+                selected.append(tool)
+        kept = {id(tool) for tool in selected}
+        return [tool for tool in tool_definitions if id(tool) in kept]
+
+    @staticmethod
+    def _tool_schema_name(schema: dict[str, Any]) -> str:
+        function = schema.get("function")
+        if isinstance(function, dict):
+            name = cast(dict[str, Any], function).get("name")
+            if isinstance(name, str):
+                return name
+        name = schema.get("name")
+        return name if isinstance(name, str) else ""
 
     @staticmethod
     def input_budget(config: ContextGovernanceConfig) -> int:

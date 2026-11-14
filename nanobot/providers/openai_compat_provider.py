@@ -1034,9 +1034,14 @@ class OpenAICompatProvider(LLMProvider):
                 wire_effort = mapped or None
                 semantic_effort = mapped or "none"
 
+        send_disabled_effort = bool(
+            spec
+            and spec.send_disabled_reasoning_effort
+            and semantic_effort == "none"
+        )
         if strip_effort:
             wire_effort = None
-        elif wire_effort and semantic_effort != "none":
+        elif wire_effort and (semantic_effort != "none" or send_disabled_effort):
             kwargs["reasoning_effort"] = wire_effort
 
         # Only send thinking controls when reasoning_effort is explicit so

@@ -109,6 +109,11 @@ class ProviderSpec:
     # Mistral: only "high"/"none" — low/minimal map to "none", medium maps to "high".
     reasoning_effort_remap: tuple[tuple[str, str], ...] = ()
 
+    # Send reasoning_effort "none" instead of omitting it. Ollama's OpenAI
+    # endpoint turns thinking off only when that value is present; omission
+    # keeps the model's own thinking default.
+    send_disabled_reasoning_effort: bool = False
+
     # Models whose API rejects the reasoning_effort kwarg because reasoning is
     # implicit (Magistral always reasons; sending the kwarg returns HTTP 400).
     # Substring match against the wire model name (lowercased).
@@ -719,6 +724,12 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         is_local=True,
         detect_by_base_keyword="11434",
         default_api_base="http://localhost:11434/v1",
+        # xhigh is a Grok effort. Ollama accepts none/low/medium/high/max.
+        reasoning_effort_remap=(
+            ("minimal", "low"),
+            ("xhigh", "high"),
+        ),
+        send_disabled_reasoning_effort=True,
     ),
     # LM Studio (local, OpenAI-compatible)
     ProviderSpec(
